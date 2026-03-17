@@ -88,6 +88,42 @@ function start_server(; host::AbstractString="127.0.0.1", port::Int=8080,
         end
     end)
 
+    # Simulation: start async simulation (returns immediately)
+    HTTP.register!(router, "POST", "/api/simulation/start", function(req)
+        try
+            body = JSON3.read(String(req.body))
+            setup = Dict{String,Any}(string(k) => v for (k, v) in pairs(body))
+            if haskey(setup, "parameters")
+                setup["parameters"] = Dict{String,Any}(
+                    string(k) => v for (k, v) in pairs(setup["parameters"])
+                )
+            end
+            errors = validate_simulation_params(setup)
+            if !isempty(errors)
+                return HTTP.Response(400, ["Content-Type" => "application/json",
+                                           "Access-Control-Allow-Origin" => "*"],
+                                    body=JSON3.write(Dict("status" => "error",
+                                                          "errors" => [Dict("param" => e[1], "message" => e[2]) for e in errors])))
+            end
+            result = start_simulation_async(setup)
+            return HTTP.Response(200, ["Content-Type" => "application/json",
+                                       "Access-Control-Allow-Origin" => "*"],
+                                body=JSON3.write(result))
+        catch e
+            return HTTP.Response(500, ["Content-Type" => "application/json"],
+                                body=JSON3.write(Dict("status" => "error",
+                                                      "message" => sprint(showerror, e))))
+        end
+    end)
+
+    # Simulation: poll for async simulation status and log
+    HTTP.register!(router, "GET", "/api/simulation/status", function(req)
+        status = get_simulation_status()
+        return HTTP.Response(200, ["Content-Type" => "application/json",
+                                   "Access-Control-Allow-Origin" => "*"],
+                            body=JSON3.write(status))
+    end)
+
     # CORS preflight for simulation endpoints
     HTTP.register!(router, "OPTIONS", "/api/simulation/*", function(req)
         return HTTP.Response(204, [

@@ -17,6 +17,65 @@ Typical workflow:
 """
 
 using Fimbul
+using Dates
+
+# ── Async simulation state ───────────────────────────────────────────────────
+
+const _sim_lock = ReentrantLock()
+const _sim_log = Ref{Vector{String}}(String[])
+const _sim_running = Ref{Bool}(false)
+const _sim_result = Ref{Any}(nothing)
+
+"""Push a log message to the simulation log (thread-safe)."""
+function _sim_log_push!(msg::AbstractString)
+    lock(_sim_lock) do
+        push!(_sim_log[], "[$(Dates.format(now(), "HH:MM:SS"))] $msg")
+    end
+end
+
+"""Get a snapshot of the simulation status (thread-safe)."""
+function get_simulation_status()
+    lock(_sim_lock) do
+        Dict{String,Any}(
+            "running" => _sim_running[],
+            "log"     => copy(_sim_log[]),
+            "result"  => _sim_result[],
+        )
+    end
+end
+
+"""Start a simulation asynchronously. Returns immediately."""
+function start_simulation_async(setup::AbstractDict; mock::Bool=false)
+    if _sim_running[]
+        return Dict{String,Any}("status" => "error", "message" => "A simulation is already running.")
+    end
+
+    lock(_sim_lock) do
+        _sim_log[] = String[]
+        _sim_running[] = true
+        _sim_result[] = nothing
+    end
+
+    Threads.@spawn begin
+        try
+            result = run_fimbul_simulation(setup; mock=mock)
+            lock(_sim_lock) do
+                _sim_result[] = result
+                _sim_running[] = false
+            end
+        catch e
+            lock(_sim_lock) do
+                _sim_result[] = Dict{String,Any}(
+                    "status"  => "error",
+                    "message" => "Simulation failed: $(sprint(showerror, e))",
+                )
+                _sim_running[] = false
+            end
+        end
+    end
+
+    return Dict{String,Any}("status" => "started", "message" => "Simulation started.")
+end
 
 # ── Physical constants for parameter estimation ──────────────────────────────
 
@@ -324,7 +383,10 @@ end
 """Run simulation using Fimbul.jl."""
 function _run_fimbul_live(case_type, params)
     try
+        _sim_log_push!("Initializing $case_type simulation...")
+
         if case_type == "AGS"
+            _sim_log_push!("Creating AGS case with well depth=$(get(params, "well_depth", "?"))m...")
             case = Fimbul.ags(;
                 porosity                  = params["porosity"],
                 permeability              = params["permeability"] * 1e-3 * Fimbul.darcy,
@@ -337,6 +399,7 @@ function _run_fimbul_live(case_type, params)
                 num_years                 = round(Int, params["num_years"]),
             )
         elseif case_type == "BTES"
+            _sim_log_push!("Creating BTES case with $(get(params, "num_wells_btes", "?")) wells...")
             case = Fimbul.btes(;
                 num_wells            = round(Int, params["num_wells_btes"]),
                 num_sectors          = round(Int, params["num_sectors"]),
@@ -352,8 +415,13 @@ function _run_fimbul_live(case_type, params)
             return Dict("status" => "error", "message" => "Unknown case type: $case_type")
         end
 
+        _sim_log_push!("Case created. Starting reservoir simulation...")
+        _sim_log_push!("This may take several minutes depending on model size.")
+
         # Simulate the entire specified period
         results = Fimbul.simulate_reservoir(case)
+
+        _sim_log_push!("Simulation completed. Extracting results...")
 
         # Extract well data from results
         well_data = Dict{String,Any}()
@@ -372,6 +440,9 @@ function _run_fimbul_live(case_type, params)
         # Convert timestamps from seconds to days
         timestamps = collect(Float64, results.time)
 
+        _sim_log_push!("Results extracted: $(length(well_data)) well(s), $(length(results.states)) timesteps.")
+        _sim_log_push!("Simulation finished successfully.")
+
         return Dict{String,Any}(
             "status"     => "completed",
             "message"    => "Simulation completed successfully.",
@@ -380,6 +451,7 @@ function _run_fimbul_live(case_type, params)
             "num_steps"  => length(results.states),
         )
     catch e
+        _sim_log_push!("ERROR: $(sprint(showerror, e))")
         return Dict{String,Any}(
             "status"  => "error",
             "message" => "Simulation failed: $(sprint(showerror, e))",
@@ -396,6 +468,8 @@ const DAYS_PER_YEAR = 365.25
 
 """Generate mock simulation results for testing."""
 function _run_mock_simulation(case_type, params)
+    _sim_log_push!("Starting mock $case_type simulation...")
+
     n_years = round(Int, get(params, "num_years", 25))
     n_steps = n_years * 12
     dt = range(0, n_years * DAYS_PER_YEAR; length=n_steps)
@@ -405,6 +479,8 @@ function _run_mock_simulation(case_type, params)
     T_surface = get(params, "surface_temperature", 7.0)
     gradient = get(params, "geothermal_gradient", 0.025)
     T_bottom = T_surface + gradient * depth
+
+    _sim_log_push!("Generating well data ($n_steps timesteps)...")
 
     T_prod = [T_bottom - MOCK_TEMP_DECAY_FACTOR * log(1 + t / DAYS_PER_YEAR) + MOCK_SEASONAL_AMPLITUDE * sin(2π * t / DAYS_PER_YEAR) for t in timestamps]
     T_inj  = fill(get(params, "temperature_inj", 25.0), n_steps)
@@ -424,11 +500,104 @@ function _run_mock_simulation(case_type, params)
         )
     end
 
+    # Generate mock reservoir states
+    _sim_log_push!("Generating reservoir state data...")
+    reservoir_states = _generate_mock_reservoir_states(case_type, params, timestamps)
+
+    _sim_log_push!("Mock simulation completed.")
+
     return Dict{String,Any}(
-        "status"     => "completed",
-        "message"    => "Mock simulation completed (for testing).",
-        "well_data"  => well_data,
-        "timestamps" => timestamps,
-        "num_steps"  => n_steps,
+        "status"           => "completed",
+        "message"          => "Mock simulation completed (for testing).",
+        "well_data"        => well_data,
+        "timestamps"       => timestamps,
+        "num_steps"        => n_steps,
+        "reservoir_states" => reservoir_states,
+    )
+end
+
+"""
+    _generate_mock_reservoir_states(case_type, params, timestamps) -> Dict
+
+Generate mock 3D reservoir state data for visualization.
+Returns grid coordinates and field values (Pressure, Temperature) at selected timesteps.
+"""
+function _generate_mock_reservoir_states(case_type, params, timestamps)
+    depth = get(params, "well_depth", 200.0)
+    T_surface = get(params, "surface_temperature", 7.0)
+    gradient = get(params, "geothermal_gradient", 0.025)
+
+    # Grid dimensions (keep small for performance)
+    nx, ny, nz = 12, 12, 8
+    radius = case_type == "BTES" ? get(params, "well_spacing", 5.0) * 4 : 50.0
+
+    x_vals = collect(range(-radius, radius; length=nx))
+    y_vals = collect(range(-radius, radius; length=ny))
+    z_vals = collect(range(0, -depth; length=nz))
+
+    # Flatten coordinates
+    coords_x = Float64[]
+    coords_y = Float64[]
+    coords_z = Float64[]
+    for zi in z_vals, yi in y_vals, xi in x_vals
+        push!(coords_x, xi)
+        push!(coords_y, yi)
+        push!(coords_z, zi)
+    end
+
+    n_cells = length(coords_x)
+    n_total = length(timestamps)
+
+    # Select representative timesteps (max 12 for performance)
+    n_vis = min(12, n_total)
+    step_indices = round.(Int, range(1, n_total; length=n_vis))
+
+    steps = Vector{Dict{String,Any}}()
+    for si in step_indices
+        t = timestamps[si]
+
+        # Mock pressure: hydrostatic + time-dependent perturbation
+        P_base = 1.0  # 1 atm at surface in bar
+        pressure = Float64[]
+        temperature = Float64[]
+
+        for (k, zi) in enumerate(z_vals), (j, yi) in enumerate(y_vals), (i, xi) in enumerate(x_vals)
+            r = sqrt(xi^2 + yi^2)
+            z_depth = abs(zi)
+
+            # Pressure: hydrostatic + radial perturbation near well
+            p = P_base + 0.1 * z_depth  # ~10 bar per 100m
+            if r < radius * 0.5
+                p += 5.0 * exp(-r / (radius * 0.2)) * (1 - exp(-t / (DAYS_PER_YEAR * 2)))
+            end
+            push!(pressure, p)
+
+            # Temperature: geothermal gradient + cooling near well
+            temp = T_surface + gradient * z_depth
+            if r < radius * 0.5
+                cooling = MOCK_TEMP_DECAY_FACTOR * log(1 + t / DAYS_PER_YEAR) * exp(-r / (radius * 0.3))
+                temp -= cooling
+            end
+            push!(temperature, temp)
+        end
+
+        push!(steps, Dict{String,Any}(
+            "Pressure"    => pressure,
+            "Temperature" => temperature,
+        ))
+    end
+
+    return Dict{String,Any}(
+        "grid" => Dict{String,Any}(
+            "x"  => coords_x,
+            "y"  => coords_y,
+            "z"  => coords_z,
+            "nx" => nx,
+            "ny" => ny,
+            "nz" => nz,
+        ),
+        "variables"    => ["Pressure", "Temperature"],
+        "steps"        => steps,
+        "step_indices" => step_indices,
     )
 end

@@ -180,4 +180,81 @@ using JSON3
         @test result2["status"] == "completed"
         @test haskey(result2["well_data"], "BTES Array")
     end
+
+    @testset "Simulation — Mock Reservoir States" begin
+        using GeothermalViz
+
+        # AGS mock should include reservoir_states
+        props = Dict("layer" => "EnergiBrønn", "boretLengde" => 200.0)
+        setup = well_to_simulation_params(props)
+        result = run_fimbul_simulation(setup; mock=true)
+        @test haskey(result, "reservoir_states")
+
+        rs = result["reservoir_states"]
+        @test haskey(rs, "grid")
+        @test haskey(rs, "variables")
+        @test haskey(rs, "steps")
+        @test haskey(rs, "step_indices")
+
+        grid = rs["grid"]
+        @test haskey(grid, "x")
+        @test haskey(grid, "y")
+        @test haskey(grid, "z")
+        @test haskey(grid, "nx")
+        @test haskey(grid, "ny")
+        @test haskey(grid, "nz")
+        @test length(grid["x"]) == grid["nx"] * grid["ny"] * grid["nz"]
+        @test length(grid["y"]) == length(grid["x"])
+        @test length(grid["z"]) == length(grid["x"])
+
+        # Variables should include Pressure and Temperature
+        @test "Pressure" in rs["variables"]
+        @test "Temperature" in rs["variables"]
+
+        # Each step should have values for each variable
+        @test length(rs["steps"]) > 0
+        for step in rs["steps"]
+            @test haskey(step, "Pressure")
+            @test haskey(step, "Temperature")
+            @test length(step["Pressure"]) == length(grid["x"])
+            @test length(step["Temperature"]) == length(grid["x"])
+        end
+
+        # Step indices should be valid
+        @test length(rs["step_indices"]) == length(rs["steps"])
+        @test all(i -> 1 <= i <= result["num_steps"], rs["step_indices"])
+
+        # BTES mock should also include reservoir_states
+        props2 = Dict("layer" => "BrønnPark", "brønnParkNr" => "1")
+        setup2 = well_to_simulation_params(props2)
+        result2 = run_fimbul_simulation(setup2; mock=true)
+        @test haskey(result2, "reservoir_states")
+        @test length(result2["reservoir_states"]["steps"]) > 0
+    end
+
+    @testset "Simulation — Async Start and Status" begin
+        using GeothermalViz
+
+        # Status before any simulation
+        status = get_simulation_status()
+        @test haskey(status, "running")
+        @test haskey(status, "log")
+        @test haskey(status, "result")
+
+        # Start async mock simulation
+        props = Dict("layer" => "EnergiBrønn", "boretLengde" => 200.0)
+        setup = well_to_simulation_params(props)
+        setup["mock"] = true  # Note: start_simulation_async passes mock flag
+        start_result = start_simulation_async(setup; mock=true)
+        @test start_result["status"] == "started"
+
+        # Wait for completion (mock is fast)
+        sleep(2.0)
+
+        status = get_simulation_status()
+        @test status["running"] == false
+        @test status["result"] !== nothing
+        @test status["result"]["status"] == "completed"
+        @test length(status["log"]) > 0
+    end
 end
