@@ -444,8 +444,25 @@ function _run_fimbul_live(case_type, params)
     try
         _sim_log_push!("Initializing $case_type simulation...")
 
+        num_seg = round(Int, get(params, "num_segments", 10))
         if case_type == "AGS"
             _sim_log_push!("Creating AGS case with well depth=$(get(params, "well_depth", "?"))m...")
+            # Compute hz (cell heights per depth layer) from num_segments.
+            # Fimbul.ags uses a `depths` vector that defines layer boundaries.
+            # We use the default depths and distribute num_segments across
+            # layers proportionally to their thickness.
+            depths = [0.0, 1500.0, 2300.0, 2400.0, 2800.0]
+            dz = diff(depths)
+            total = sum(dz)
+            # Allocate at least 1 cell per layer, rest proportional
+            n_layers = length(dz)
+            remaining = max(num_seg - n_layers, 0)
+            cells_per_layer = ones(Int, n_layers)
+            for i in 1:n_layers
+                cells_per_layer[i] += round(Int, remaining * dz[i] / total)
+            end
+            hz_vec = dz ./ cells_per_layer
+
             case = Fimbul.ags(;
                 porosity                  = params["porosity"],
                 permeability              = params["permeability"] * 1e-3 * Fimbul.darcy,
@@ -456,9 +473,14 @@ function _run_fimbul_live(case_type, params)
                 rate                      = params["flow_rate"] * Fimbul.meter^3 / Fimbul.hour,
                 temperature_inj           = Fimbul.convert_to_si(params["temperature_inj"], :Celsius),
                 num_years                 = round(Int, params["num_years"]),
+                hz                        = hz_vec,
             )
         elseif case_type == "BTES"
             _sim_log_push!("Creating BTES case with $(get(params, "num_wells_btes", "?")) wells...")
+            # TODO: map num_segments to Fimbul n_z (per-layer cell counts).
+            # The BTES n_z parameter is an array of cells-per-layer, which
+            # makes a simple 1-to-1 mapping non-trivial. For now we keep the
+            # Fimbul defaults and only use num_segments for the 3D visualisation.
             case = Fimbul.btes(;
                 num_wells            = round(Int, params["num_wells_btes"]),
                 num_sectors          = round(Int, params["num_sectors"]),

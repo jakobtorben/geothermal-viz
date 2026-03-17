@@ -46,19 +46,6 @@ function initSimulationPanel() {
     document.getElementById("btn-run-sim").addEventListener("click", () => {
         runSimulation();
     });
-
-    // Cross-section toggle
-    const chkXs = document.getElementById("chk-xsection");
-    const opWrap = document.getElementById("xsection-opacity-wrap");
-    const opSlider = document.getElementById("xsection-opacity");
-    chkXs.addEventListener("change", () => {
-        const on = chkXs.checked;
-        opWrap.style.display = on ? "flex" : "none";
-        if (window.Wellbore3D) window.Wellbore3D.toggleCrossSection(on);
-    });
-    opSlider.addEventListener("input", () => {
-        if (window.Wellbore3D) window.Wellbore3D.setCrossSectionOpacity(parseFloat(opSlider.value));
-    });
 }
 
 // ── Panel open/close ─────────────────────────────────────────────────────────

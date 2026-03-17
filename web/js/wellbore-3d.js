@@ -1,18 +1,20 @@
 /**
  * GeothermalViz – 3D Wellbore Visualization
  *
- * MapLibre custom layer that renders a wellbore as stacked 3D segment
- * cells above the well point on the map.  Segments represent the
- * simulation grid (controlled by the num_segments parameter).
+ * MapLibre custom layer that renders a wellbore as stacked octagonal
+ * cylinder segments above the well point on the map.
  *
- * Features:
- * - Stacked well-segment cells with distinct boundaries
- * - Optional geological cross-section overlay (toggleable)
- * - Clear wellhead cap to mark the top of the well
- * - Vertical offset so the well floats above the map surface
- * - Animated "rise-up" effect when simulation setup is triggered
- * - Hexagonal layout for wellpark (BTES) with one column per well
- * - Real-time updates when grid parameters change in the setup form
+ * Inspired by a prototype with:
+ * - Stacked octagonal cylinder segments with gaps between them
+ * - Wireframe edge overlay on each cell boundary
+ * - Semi-transparent outer casing tube
+ * - Thin inner drill-string tube
+ * - Depth-mapped colour via a swappable function
+ * - Clear wellhead cap to mark the top
+ * - Vertical offset so the well floats above the surface
+ * - Animated "rise-up" effect
+ * - Hexagonal layout for wellpark (BTES)
+ * - Real-time updates when grid parameters change
  */
 (function () {
     "use strict";
@@ -21,39 +23,54 @@
 
     const LAYER_ID = "wellbore-3d";
 
-    /** Geological cross-section layers (optional overlay). */
-    const GEO_LAYERS = [
-        { name: "Soil / Quaternary",      fraction: 0.05, color: [0.63, 0.52, 0.32] },
-        { name: "Marine Clay",            fraction: 0.07, color: [0.72, 0.59, 0.42] },
-        { name: "Glacial Till",           fraction: 0.08, color: [0.56, 0.53, 0.47] },
-        { name: "Weathered Bedrock",      fraction: 0.08, color: [0.51, 0.48, 0.45] },
-        { name: "Fractured Gneiss",       fraction: 0.15, color: [0.44, 0.48, 0.52] },
-        { name: "Precambrian Gneiss",     fraction: 0.25, color: [0.38, 0.42, 0.46] },
-        { name: "Granite / Granodiorite", fraction: 0.17, color: [0.33, 0.37, 0.40] },
-        { name: "Deep Crystalline",       fraction: 0.15, color: [0.24, 0.30, 0.35] },
-    ];
+    const SEGMENT_GAP_FRAC = 0.08;  // fraction of segment height used as gap
+    const VERTICAL_OFFSET  = 40;    // metres above surface for well base
+    const WELL_RADIUS      = 8;     // radius of single-well column (m)
+    const PARK_WELL_RADIUS = 3.5;   // radius per well in a wellpark (m)
+    const CASING_RADIUS_MULT = 1.3; // outer casing radius multiplier
+    const DRILL_RADIUS_MULT  = 0.25; // inner drill string radius multiplier
+    const CAP_HEIGHT_FRAC  = 0.025; // wellhead cap height as fraction of depth
+    const N_SIDES          = 8;     // octagonal cross-section
+    const MIN_SEGMENTS     = 2;
+    const MAX_SEGMENTS     = 100;
+    const MAX_RENDERED_WELLS = 80;
+    const ANIM_DURATION    = 1200;
+    const ANIM_DELAY       = 500;
+    const FLY_ZOOM         = 15.5;
+    const FLY_PITCH        = 60;
 
-    const SEGMENT_GAP    = 2;       // metres gap between segments (grid lines)
-    const VERTICAL_OFFSET = 40;     // metres above surface for the well base
-    const WELL_HALF      = 12;      // half-width of single-well column (m)
-    const PARK_WELL_HALF = 5;       // half-width per well in a wellpark (m)
-    const CAP_HEIGHT_FRAC = 0.02;   // wellhead cap as fraction of total height
-    const MIN_SEGMENTS   = 2;       // must match PARAM_METADATA min
-    const MAX_SEGMENTS   = 100;     // must match PARAM_METADATA max
-    const MAX_RENDERED_WELLS = 80;  // cap for BTES rendering (performance)
-    const ANIM_DURATION  = 1200;    // rise animation duration (ms)
-    const ANIM_DELAY     = 500;     // delay before animation starts (ms)
-    const FLY_ZOOM       = 15.5;
-    const FLY_PITCH      = 60;
+    // Colour palette
+    const CAP_COLOR        = [0.85, 0.22, 0.18]; // red wellhead
+    const CASING_COLOR     = [0.55, 0.58, 0.62]; // steel grey
+    const DRILL_COLOR      = [0.35, 0.35, 0.38]; // dark grey
+    const WIRE_COLOR       = [0.15, 0.15, 0.18]; // near-black wireframe
 
-    // Well segment colours – gradient from dark (bottom/deep) to light (top/shallow)
-    const SEG_COLOR_DEEP    = [0.22, 0.36, 0.55];  // dark blue-grey (deep)
-    const SEG_COLOR_SHALLOW = [0.45, 0.68, 0.82];  // light blue (shallow)
-    const CAP_COLOR         = [0.85, 0.25, 0.20];  // red wellhead cap
+    // ── Colour mapping function (swappable) ───────────────────────────────
 
-    // Cross-section settings
-    const XSECTION_OFFSET = 30;  // metres offset from well centre
-    const XSECTION_HALF_W = 4;   // half-width of cross-section slab
+    /**
+     * Default depth-based colour ramp:  warm deep → cool shallow.
+     * @param {number} t  normalised position  0 = deep, 1 = shallow
+     * @returns {number[]} [r, g, b] in 0–1 range
+     */
+    function depthColor(t) {
+        // deep: warm amber-brown [0.72, 0.38, 0.18]
+        // mid:  teal-blue        [0.20, 0.55, 0.65]
+        // shallow: cool blue-white [0.48, 0.78, 0.92]
+        if (t < 0.5) {
+            const s = t * 2; // 0→1 within lower half
+            return [
+                0.72 + (0.20 - 0.72) * s,
+                0.38 + (0.55 - 0.38) * s,
+                0.18 + (0.65 - 0.18) * s,
+            ];
+        }
+        const s = (t - 0.5) * 2; // 0→1 within upper half
+        return [
+            0.20 + (0.48 - 0.20) * s,
+            0.55 + (0.78 - 0.55) * s,
+            0.65 + (0.92 - 0.65) * s,
+        ];
+    }
 
     // ── Shader sources ─────────────────────────────────────────────────────
 
@@ -134,146 +151,239 @@
         return out;
     }
 
-    /** Push a single vertex (3 pos + 4 colour/alpha) into a plain array. */
+    /** Pre-compute the unit-circle vertices for an N-sided polygon. */
+    function polyCircle(n) {
+        const pts = [];
+        for (let i = 0; i < n; i++) {
+            const a = (2 * Math.PI * i) / n;
+            pts.push({ x: Math.cos(a), y: Math.sin(a) });
+        }
+        return pts;
+    }
+
+    const CIRCLE = polyCircle(N_SIDES);
+
+    /** Push a single vertex into array: 3 pos + 4 colour/alpha. */
     function v(arr, x, y, z, r, g, b, a) {
         arr.push(x, y, z, r, g, b, a);
     }
 
-    /** Linearly interpolate between two RGB colours. */
-    function lerpColor(c0, c1, t) {
-        return [
-            c0[0] + (c1[0] - c0[0]) * t,
-            c0[1] + (c1[1] - c0[1]) * t,
-            c0[2] + (c1[2] - c0[2]) * t,
-        ];
-    }
-
     /**
-     * Append a box (36 verts) to `arr`.
-     * Face-dependent shade simulates directional lighting.
+     * Add a filled octagonal cylinder (top + bottom caps + side quads)
+     * as triangles for a segment cell.
+     *
+     * @param {number[]} arr  - vertex accumulator
+     * @param {number} cx,cy  - centre in Mercator coords
+     * @param {number} z0,z1  - bottom and top z in Mercator coords
+     * @param {number} radius - in Mercator units
+     * @param {number[]} col  - [r, g, b] base colour
+     * @param {number} alpha  - opacity
      */
-    function addBox(arr, x0, y0, z0, x1, y1, z1, cr, cg, cb, alpha) {
-        const S = { top: 1.0, front: 0.82, right: 0.73, back: 0.65, left: 0.58, bot: 0.42 };
-        const A = alpha !== undefined ? alpha : 0.92;
-        const shade = (s) => [cr * s, cg * s, cb * s];
+    function addCylinder(arr, cx, cy, z0, z1, radius, col, alpha) {
+        const pts = CIRCLE;
+        const n = pts.length;
+        const cr = col[0], cg = col[1], cb = col[2];
 
-        // top (+z)
-        let c = shade(S.top);
-        v(arr,x0,y0,z1,c[0],c[1],c[2],A); v(arr,x1,y0,z1,c[0],c[1],c[2],A); v(arr,x1,y1,z1,c[0],c[1],c[2],A);
-        v(arr,x0,y0,z1,c[0],c[1],c[2],A); v(arr,x1,y1,z1,c[0],c[1],c[2],A); v(arr,x0,y1,z1,c[0],c[1],c[2],A);
-        // bottom (-z)
-        c = shade(S.bot);
-        v(arr,x0,y1,z0,c[0],c[1],c[2],A); v(arr,x1,y1,z0,c[0],c[1],c[2],A); v(arr,x1,y0,z0,c[0],c[1],c[2],A);
-        v(arr,x0,y1,z0,c[0],c[1],c[2],A); v(arr,x1,y0,z0,c[0],c[1],c[2],A); v(arr,x0,y0,z0,c[0],c[1],c[2],A);
-        // front (-y)
-        c = shade(S.front);
-        v(arr,x0,y0,z0,c[0],c[1],c[2],A); v(arr,x1,y0,z0,c[0],c[1],c[2],A); v(arr,x1,y0,z1,c[0],c[1],c[2],A);
-        v(arr,x0,y0,z0,c[0],c[1],c[2],A); v(arr,x1,y0,z1,c[0],c[1],c[2],A); v(arr,x0,y0,z1,c[0],c[1],c[2],A);
-        // back (+y)
-        c = shade(S.back);
-        v(arr,x1,y1,z0,c[0],c[1],c[2],A); v(arr,x0,y1,z0,c[0],c[1],c[2],A); v(arr,x0,y1,z1,c[0],c[1],c[2],A);
-        v(arr,x1,y1,z0,c[0],c[1],c[2],A); v(arr,x0,y1,z1,c[0],c[1],c[2],A); v(arr,x1,y1,z1,c[0],c[1],c[2],A);
-        // right (+x)
-        c = shade(S.right);
-        v(arr,x1,y0,z0,c[0],c[1],c[2],A); v(arr,x1,y1,z0,c[0],c[1],c[2],A); v(arr,x1,y1,z1,c[0],c[1],c[2],A);
-        v(arr,x1,y0,z0,c[0],c[1],c[2],A); v(arr,x1,y1,z1,c[0],c[1],c[2],A); v(arr,x1,y0,z1,c[0],c[1],c[2],A);
-        // left (-x)
-        c = shade(S.left);
-        v(arr,x0,y1,z0,c[0],c[1],c[2],A); v(arr,x0,y0,z0,c[0],c[1],c[2],A); v(arr,x0,y0,z1,c[0],c[1],c[2],A);
-        v(arr,x0,y1,z0,c[0],c[1],c[2],A); v(arr,x0,y0,z1,c[0],c[1],c[2],A); v(arr,x0,y1,z1,c[0],c[1],c[2],A);
+        // Shade multipliers for pseudo-lighting
+        const topShade = 1.0, botShade = 0.45;
+
+        // Top cap (fan from centre)
+        for (let i = 0; i < n; i++) {
+            const j = (i + 1) % n;
+            const s = topShade;
+            v(arr, cx, cy, z1, cr*s, cg*s, cb*s, alpha);
+            v(arr, cx + pts[i].x * radius, cy + pts[i].y * radius, z1, cr*s, cg*s, cb*s, alpha);
+            v(arr, cx + pts[j].x * radius, cy + pts[j].y * radius, z1, cr*s, cg*s, cb*s, alpha);
+        }
+
+        // Bottom cap
+        for (let i = 0; i < n; i++) {
+            const j = (i + 1) % n;
+            const s = botShade;
+            v(arr, cx, cy, z0, cr*s, cg*s, cb*s, alpha);
+            v(arr, cx + pts[j].x * radius, cy + pts[j].y * radius, z0, cr*s, cg*s, cb*s, alpha);
+            v(arr, cx + pts[i].x * radius, cy + pts[i].y * radius, z0, cr*s, cg*s, cb*s, alpha);
+        }
+
+        // Side faces (two triangles per quad)
+        for (let i = 0; i < n; i++) {
+            const j = (i + 1) % n;
+            // Face-dependent shade based on face normal angle
+            const faceAngle = Math.atan2(
+                (pts[i].y + pts[j].y) * 0.5,
+                (pts[i].x + pts[j].x) * 0.5
+            );
+            const s = 0.55 + 0.35 * Math.max(0, Math.cos(faceAngle - 0.8));
+
+            const ax = cx + pts[i].x * radius, ay = cy + pts[i].y * radius;
+            const bx = cx + pts[j].x * radius, by = cy + pts[j].y * radius;
+
+            v(arr, ax, ay, z0, cr*s, cg*s, cb*s, alpha);
+            v(arr, bx, by, z0, cr*s, cg*s, cb*s, alpha);
+            v(arr, bx, by, z1, cr*s, cg*s, cb*s, alpha);
+
+            v(arr, ax, ay, z0, cr*s, cg*s, cb*s, alpha);
+            v(arr, bx, by, z1, cr*s, cg*s, cb*s, alpha);
+            v(arr, ax, ay, z1, cr*s, cg*s, cb*s, alpha);
+        }
     }
 
     /**
-     * Build vertex data for well segments.
+     * Add wireframe edges for one octagonal segment cell.
+     * Uses thin degenerate quads to simulate line rendering.
      *
-     * Segments are stacked bottom-to-top.  The bottom of the well is at
-     * VERTICAL_OFFSET above the surface; the top segment is highest.
-     * A red wellhead cap sits on top to mark the wellhead.
+     * @param {number[]} arr  - vertex accumulator
+     * @param {number} cx,cy  - centre
+     * @param {number} z0,z1  - bottom and top z
+     * @param {number} radius - in Mercator units
+     * @param {number} thick  - line "half-width" in Mercator units
+     */
+    function addWireframe(arr, cx, cy, z0, z1, radius, thick) {
+        const pts = CIRCLE;
+        const n = pts.length;
+        const wr = WIRE_COLOR[0], wg = WIRE_COLOR[1], wb = WIRE_COLOR[2];
+        const wa = 0.70;
+
+        // Helper: draw a thin quad between two 3D points
+        function edgeLine(x0, y0, z0p, x1, y1, z1p) {
+            // perpendicular offset for thickness
+            const dx = x1 - x0, dy = y1 - y0, dz = z1p - z0p;
+            const len = Math.sqrt(dx*dx + dy*dy + dz*dz);
+            if (len < 1e-20) return;
+            // use a fixed offset direction (outward from centre)
+            const mx = (x0 + x1) * 0.5 - cx;
+            const my = (y0 + y1) * 0.5 - cy;
+            const mLen = Math.sqrt(mx*mx + my*my);
+            let nx, ny;
+            if (mLen > 1e-20) {
+                nx = mx / mLen * thick;
+                ny = my / mLen * thick;
+            } else {
+                nx = thick;
+                ny = 0;
+            }
+
+            v(arr, x0 - nx, y0 - ny, z0p, wr, wg, wb, wa);
+            v(arr, x0 + nx, y0 + ny, z0p, wr, wg, wb, wa);
+            v(arr, x1 + nx, y1 + ny, z1p, wr, wg, wb, wa);
+
+            v(arr, x0 - nx, y0 - ny, z0p, wr, wg, wb, wa);
+            v(arr, x1 + nx, y1 + ny, z1p, wr, wg, wb, wa);
+            v(arr, x1 - nx, y1 - ny, z1p, wr, wg, wb, wa);
+        }
+
+        // Top ring
+        for (let i = 0; i < n; i++) {
+            const j = (i + 1) % n;
+            edgeLine(
+                cx + pts[i].x * radius, cy + pts[i].y * radius, z1,
+                cx + pts[j].x * radius, cy + pts[j].y * radius, z1
+            );
+        }
+
+        // Bottom ring
+        for (let i = 0; i < n; i++) {
+            const j = (i + 1) % n;
+            edgeLine(
+                cx + pts[i].x * radius, cy + pts[i].y * radius, z0,
+                cx + pts[j].x * radius, cy + pts[j].y * radius, z0
+            );
+        }
+
+        // Vertical edges
+        for (let i = 0; i < n; i++) {
+            edgeLine(
+                cx + pts[i].x * radius, cy + pts[i].y * radius, z0,
+                cx + pts[i].x * radius, cy + pts[i].y * radius, z1
+            );
+        }
+    }
+
+    // ── Build full wellbore geometry ───────────────────────────────────────
+
+    /**
+     * Build all vertex data for the well visualisation.
      *
-     * The colour gradient goes from deep (dark) at bottom to shallow (light)
-     * at top, making it clear which end is the wellhead.
+     * Order of drawing layers (all in one buffer):
+     * 1. Filled segment cylinders (depth-coloured, opaque)
+     * 2. Wireframe edges per segment
+     * 3. Outer casing tube (semi-transparent)
+     * 4. Inner drill-string tube
+     * 5. Wellhead cap (red marker)
      */
     function buildVertices(center, scale, params, caseType, progress) {
         const arr   = [];
         const depth = params.well_depth || 200;
         const nSeg  = Math.max(MIN_SEGMENTS, Math.min(Math.round(params.num_segments || 10), MAX_SEGMENTS));
 
-        let positions, hw;
+        let positions, baseRadius;
         if (caseType === "BTES") {
             const n  = Math.min(params.num_wells_btes || 48, MAX_RENDERED_WELLS);
             const sp = params.well_spacing || 5;
-            hw = PARK_WELL_HALF * scale;
-            const displaySpacing = Math.max(PARK_WELL_HALF * 2.5, sp * (n > 20 ? 4 : 6));
+            baseRadius = PARK_WELL_RADIUS * scale;
+            const displaySpacing = Math.max(PARK_WELL_RADIUS * 3, sp * (n > 20 ? 4 : 6));
             positions = hexLayout(n, displaySpacing);
         } else {
             positions = [{ dx: 0, dy: 0 }];
-            hw = WELL_HALF * scale;
+            baseRadius = WELL_RADIUS * scale;
         }
 
-        const segH = depth / nSeg;
+        const segTotal  = depth / nSeg;
+        const gapHeight = segTotal * SEGMENT_GAP_FRAC;
+        const segHeight = segTotal - gapHeight;
+        const wireThick = baseRadius * 0.04;
 
         for (const pos of positions) {
             const cx = center.x + pos.dx * scale;
             const cy = center.y - pos.dy * scale;
             let curZ = VERTICAL_OFFSET;
 
-            // Well segments (bottom = deep, top = shallow)
+            // ── 1. Segment cylinders (bottom = deep, top = shallow) ──
             for (let i = 0; i < nSeg; i++) {
-                const t = nSeg > 1 ? i / (nSeg - 1) : 0;
-                const col = lerpColor(SEG_COLOR_DEEP, SEG_COLOR_SHALLOW, t);
-
-                const net  = Math.max(0, segH - SEGMENT_GAP);
-                const z0   = curZ * scale * progress;
-                const z1   = (curZ + net) * scale * progress;
+                const t   = nSeg > 1 ? i / (nSeg - 1) : 0.5;
+                const col = depthColor(t);
+                const z0  = curZ * scale * progress;
+                const z1  = (curZ + segHeight) * scale * progress;
 
                 if (z1 > z0 + 1e-12) {
-                    addBox(arr,
-                        cx - hw, cy - hw, z0,
-                        cx + hw, cy + hw, z1,
-                        col[0], col[1], col[2], 0.92);
+                    addCylinder(arr, cx, cy, z0, z1, baseRadius, col, 0.92);
                 }
-                curZ += segH;
+                curZ += segTotal;
             }
 
-            // Wellhead cap (red marker on top)
+            // ── 2. Wireframe edges per segment ──
+            curZ = VERTICAL_OFFSET;
+            for (let i = 0; i < nSeg; i++) {
+                const z0 = curZ * scale * progress;
+                const z1 = (curZ + segHeight) * scale * progress;
+                if (z1 > z0 + 1e-12) {
+                    addWireframe(arr, cx, cy, z0, z1, baseRadius, wireThick);
+                }
+                curZ += segTotal;
+            }
+
+            // ── 3. Outer casing tube (semi-transparent) ──
+            const casingR = baseRadius * CASING_RADIUS_MULT;
+            const wellZ0  = VERTICAL_OFFSET * scale * progress;
+            const wellZ1  = (VERTICAL_OFFSET + depth) * scale * progress;
+            if (wellZ1 > wellZ0 + 1e-12) {
+                addCylinder(arr, cx, cy, wellZ0, wellZ1, casingR, CASING_COLOR, 0.15);
+            }
+
+            // ── 4. Inner drill-string tube ──
+            const drillR = baseRadius * DRILL_RADIUS_MULT;
+            if (wellZ1 > wellZ0 + 1e-12) {
+                addCylinder(arr, cx, cy, wellZ0, wellZ1, drillR, DRILL_COLOR, 0.85);
+            }
+
+            // ── 5. Wellhead cap (red marker on top) ──
             const capH  = Math.max(depth * CAP_HEIGHT_FRAC, 3);
-            const capZ0 = curZ * scale * progress;
-            const capZ1 = (curZ + capH) * scale * progress;
-            const capHw = hw * 1.15;
+            const capZ0 = (VERTICAL_OFFSET + depth) * scale * progress;
+            const capZ1 = (VERTICAL_OFFSET + depth + capH) * scale * progress;
+            const capR  = baseRadius * 1.25;
             if (capZ1 > capZ0 + 1e-12) {
-                addBox(arr,
-                    cx - capHw, cy - capHw, capZ0,
-                    cx + capHw, cy + capHw, capZ1,
-                    CAP_COLOR[0], CAP_COLOR[1], CAP_COLOR[2], 0.95);
+                addCylinder(arr, cx, cy, capZ0, capZ1, capR, CAP_COLOR, 0.95);
             }
-        }
-        return new Float32Array(arr);
-    }
-
-    /**
-     * Build vertex data for the geological cross-section overlay.
-     */
-    function buildCrossSectionVertices(center, scale, params, progress) {
-        const arr   = [];
-        const depth = params.well_depth || 200;
-        const hw    = XSECTION_HALF_W * scale;
-
-        const cx = center.x + XSECTION_OFFSET * scale;
-        const cy = center.y;
-        let curZ = VERTICAL_OFFSET;
-
-        for (const layer of GEO_LAYERS) {
-            const segH = depth * layer.fraction;
-            const z0 = curZ * scale * progress;
-            const z1 = (curZ + segH) * scale * progress;
-            if (z1 > z0 + 1e-12) {
-                addBox(arr,
-                    cx - hw, cy - hw, z0,
-                    cx + hw, cy + hw, z1,
-                    layer.color[0], layer.color[1], layer.color[2],
-                    layerState.xsectionOpacity);
-            }
-            curZ += segH;
         }
         return new Float32Array(arr);
     }
@@ -281,28 +391,21 @@
     // ── Layer state (module-scoped singleton) ──────────────────────────────
 
     const layerState = {
-        active:          false,
-        map:             null,
-        lngLat:          null,
-        params:          null,
-        caseType:        null,
-        progress:        0,
-        animStart:       0,
-        needsBuild:      false,
-        // Cross-section
-        showXsection:    false,
-        xsectionOpacity: 0.55,
-        xsNeedsBuild:    false,
-        // GL handles — main well
-        program:     null,
-        buffer:      null,
-        vertCount:   0,
-        aPos:        -1,
-        aColor:      -1,
-        uMatrix:     null,
-        // GL handles — cross-section (shares program)
-        xsBuffer:    null,
-        xsVertCount: 0,
+        active:     false,
+        map:        null,
+        lngLat:     null,
+        params:     null,
+        caseType:   null,
+        progress:   0,
+        animStart:  0,
+        needsBuild: false,
+        // GL handles
+        program:    null,
+        buffer:     null,
+        vertCount:  0,
+        aPos:       -1,
+        aColor:     -1,
+        uMatrix:    null,
     };
 
     // ── Geometry rebuild ───────────────────────────────────────────────────
@@ -325,21 +428,6 @@
         layerState.vertCount = verts.length / 7;
     }
 
-    function rebuildXsection(gl) {
-        const ll = getLngLat();
-        if (!ll || !layerState.params || !layerState.xsBuffer) return;
-        if (!layerState.showXsection) {
-            layerState.xsVertCount = 0;
-            return;
-        }
-        const mc    = maplibregl.MercatorCoordinate.fromLngLat(ll, 0);
-        const scale = mc.meterInMercatorCoordinateUnits();
-        const verts = buildCrossSectionVertices(mc, scale, layerState.params, layerState.progress);
-        gl.bindBuffer(gl.ARRAY_BUFFER, layerState.xsBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
-        layerState.xsVertCount = verts.length / 7;
-    }
-
     // ── Custom layer object ────────────────────────────────────────────────
 
     const customLayer = {
@@ -353,10 +441,8 @@
             layerState.aPos    = gl.getAttribLocation(layerState.program, "a_pos");
             layerState.aColor  = gl.getAttribLocation(layerState.program, "a_color");
             layerState.uMatrix = gl.getUniformLocation(layerState.program, "u_matrix");
-            layerState.buffer    = gl.createBuffer();
-            layerState.xsBuffer  = gl.createBuffer();
-            layerState.needsBuild  = true;
-            layerState.xsNeedsBuild = true;
+            layerState.buffer  = gl.createBuffer();
+            layerState.needsBuild = true;
         },
 
         render(gl, matrix) {
@@ -367,8 +453,7 @@
             if (layerState.progress < 1) {
                 const t = Math.max(0, Math.min((performance.now() - layerState.animStart) / ANIM_DURATION, 1));
                 layerState.progress = 1 - Math.pow(1 - t, 3);  // ease-out cubic
-                layerState.needsBuild  = true;
-                layerState.xsNeedsBuild = true;
+                layerState.needsBuild = true;
                 animating = true;
             }
 
@@ -376,10 +461,7 @@
                 rebuild(gl);
                 layerState.needsBuild = false;
             }
-            if (layerState.xsNeedsBuild) {
-                rebuildXsection(gl);
-                layerState.xsNeedsBuild = false;
-            }
+            if (layerState.vertCount === 0) return;
 
             gl.useProgram(layerState.program);
             gl.uniformMatrix4fv(layerState.uMatrix, false, matrix);
@@ -388,36 +470,20 @@
             gl.enable(gl.DEPTH_TEST);
 
             const stride = 7 * 4;
-
-            // Draw main well segments
-            if (layerState.vertCount > 0) {
-                gl.bindBuffer(gl.ARRAY_BUFFER, layerState.buffer);
-                gl.enableVertexAttribArray(layerState.aPos);
-                gl.vertexAttribPointer(layerState.aPos,   3, gl.FLOAT, false, stride, 0);
-                gl.enableVertexAttribArray(layerState.aColor);
-                gl.vertexAttribPointer(layerState.aColor, 4, gl.FLOAT, false, stride, 12);
-                gl.drawArrays(gl.TRIANGLES, 0, layerState.vertCount);
-            }
-
-            // Draw cross-section overlay
-            if (layerState.xsVertCount > 0) {
-                gl.bindBuffer(gl.ARRAY_BUFFER, layerState.xsBuffer);
-                gl.enableVertexAttribArray(layerState.aPos);
-                gl.vertexAttribPointer(layerState.aPos,   3, gl.FLOAT, false, stride, 0);
-                gl.enableVertexAttribArray(layerState.aColor);
-                gl.vertexAttribPointer(layerState.aColor, 4, gl.FLOAT, false, stride, 12);
-                gl.drawArrays(gl.TRIANGLES, 0, layerState.xsVertCount);
-            }
+            gl.bindBuffer(gl.ARRAY_BUFFER, layerState.buffer);
+            gl.enableVertexAttribArray(layerState.aPos);
+            gl.vertexAttribPointer(layerState.aPos,   3, gl.FLOAT, false, stride, 0);
+            gl.enableVertexAttribArray(layerState.aColor);
+            gl.vertexAttribPointer(layerState.aColor, 4, gl.FLOAT, false, stride, 12);
+            gl.drawArrays(gl.TRIANGLES, 0, layerState.vertCount);
 
             if (animating && layerState.map) layerState.map.triggerRepaint();
         },
 
         onRemove(_map, gl) {
-            if (layerState.buffer)   { gl.deleteBuffer(layerState.buffer);   layerState.buffer   = null; }
-            if (layerState.xsBuffer) { gl.deleteBuffer(layerState.xsBuffer); layerState.xsBuffer = null; }
-            if (layerState.program)  { gl.deleteProgram(layerState.program);  layerState.program  = null; }
-            layerState.vertCount   = 0;
-            layerState.xsVertCount = 0;
+            if (layerState.buffer)  { gl.deleteBuffer(layerState.buffer);   layerState.buffer  = null; }
+            if (layerState.program) { gl.deleteProgram(layerState.program);  layerState.program = null; }
+            layerState.vertCount = 0;
         },
     };
 
@@ -455,40 +521,26 @@
     function update(params) {
         if (!layerState.active || !layerState.map) return;
         Object.assign(layerState.params, params);
-        layerState.progress       = 1;
-        layerState.needsBuild     = true;
-        layerState.xsNeedsBuild   = true;
+        layerState.progress   = 1;
+        layerState.needsBuild = true;
         layerState.map.triggerRepaint();
-    }
-
-    function toggleCrossSection(visible) {
-        layerState.showXsection = visible !== undefined ? visible : !layerState.showXsection;
-        layerState.xsNeedsBuild = true;
-        if (layerState.map) layerState.map.triggerRepaint();
-    }
-
-    function setCrossSectionOpacity(val) {
-        layerState.xsectionOpacity = Math.max(0, Math.min(1, val));
-        layerState.xsNeedsBuild = true;
-        if (layerState.map) layerState.map.triggerRepaint();
     }
 
     function removeLayer() {
         if (layerState.map && layerState.map.getLayer(LAYER_ID)) {
             try { layerState.map.removeLayer(LAYER_ID); } catch (_e) { /* already removed */ }
         }
-        layerState.active      = false;
-        layerState.vertCount   = 0;
-        layerState.xsVertCount = 0;
-        layerState.params      = null;
-        layerState.lngLat      = null;
+        layerState.active    = false;
+        layerState.vertCount = 0;
+        layerState.params    = null;
+        layerState.lngLat    = null;
         if (layerState.map) layerState.map.triggerRepaint();
         layerState.map = null;
     }
 
     // ── Expose & register extension ────────────────────────────────────────
 
-    window.Wellbore3D = { show, update, remove: removeLayer, toggleCrossSection, setCrossSectionOpacity };
+    window.Wellbore3D = { show, update, remove: removeLayer };
 
     window.addEventListener("load", () => {
         if (!window.GeothermalViz) return;
