@@ -689,7 +689,8 @@ function render_reservoir_image(var::AbstractString, step::Int; delta::Bool=fals
     (step < 1 || step > length(states)) && return ""
 
     try
-        mesh = Fimbul.physical_representation(Fimbul.reservoir_model(case.model).data_domain)
+        res_model = Fimbul.reservoir_model(case.model)
+        mesh = Fimbul.physical_representation(res_model.data_domain)
         state = states[step]
         title = "$var at step $step"
         if delta
