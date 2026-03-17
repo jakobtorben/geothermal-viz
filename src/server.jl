@@ -44,6 +44,59 @@ function start_server(; host::AbstractString="127.0.0.1", port::Int=8080,
                             body=JSON3.write(Dict("status" => "ok", "version" => "0.1.0")))
     end)
 
+    # Simulation: convert well metadata to Fimbul parameters
+    HTTP.register!(router, "POST", "/api/simulation/setup", function(req)
+        try
+            body = JSON3.read(String(req.body))
+            properties = Dict{String,Any}(string(k) => v for (k, v) in pairs(body))
+            result = well_to_simulation_params(properties)
+            return HTTP.Response(200, ["Content-Type" => "application/json",
+                                       "Access-Control-Allow-Origin" => "*"],
+                                body=JSON3.write(result))
+        catch e
+            return HTTP.Response(400, ["Content-Type" => "application/json"],
+                                body=JSON3.write(Dict("error" => sprint(showerror, e))))
+        end
+    end)
+
+    # Simulation: run Fimbul simulation with parameters
+    HTTP.register!(router, "POST", "/api/simulation/run", function(req)
+        try
+            body = JSON3.read(String(req.body))
+            setup = Dict{String,Any}(string(k) => v for (k, v) in pairs(body))
+            # Convert nested objects
+            if haskey(setup, "parameters")
+                setup["parameters"] = Dict{String,Any}(
+                    string(k) => v for (k, v) in pairs(setup["parameters"])
+                )
+            end
+            errors = validate_simulation_params(setup)
+            if !isempty(errors)
+                return HTTP.Response(400, ["Content-Type" => "application/json",
+                                           "Access-Control-Allow-Origin" => "*"],
+                                    body=JSON3.write(Dict("status" => "error",
+                                                          "errors" => [Dict("param" => e[1], "message" => e[2]) for e in errors])))
+            end
+            result = run_fimbul_simulation(setup)
+            return HTTP.Response(200, ["Content-Type" => "application/json",
+                                       "Access-Control-Allow-Origin" => "*"],
+                                body=JSON3.write(result))
+        catch e
+            return HTTP.Response(500, ["Content-Type" => "application/json"],
+                                body=JSON3.write(Dict("status" => "error",
+                                                      "message" => sprint(showerror, e))))
+        end
+    end)
+
+    # CORS preflight for simulation endpoints
+    HTTP.register!(router, "OPTIONS", "/api/simulation/*", function(req)
+        return HTTP.Response(204, [
+            "Access-Control-Allow-Origin"  => "*",
+            "Access-Control-Allow-Methods" => "POST, OPTIONS",
+            "Access-Control-Allow-Headers" => "Content-Type",
+        ])
+    end)
+
     # Serve static files and handle all other routes
     function handle_request(req)
         # Try router first

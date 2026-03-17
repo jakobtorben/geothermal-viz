@@ -79,4 +79,97 @@ using JSON3
 
         rm(output_dir; recursive=true)
     end
+
+    @testset "Simulation Parameter Mapping" begin
+        using GeothermalViz
+
+        # Case type selection
+        @test select_case_type("EnergiBrønn") == SIM_AGS
+        @test select_case_type("BrønnPark") == SIM_BTES
+        @test select_case_type("GrunnvannBrønn") == SIM_DOUBLET
+        @test select_case_type("Sonderboring") == SIM_AGS
+        @test select_case_type("Unknown") == SIM_AGS  # default fallback
+
+        # Energy well → AGS with metadata extraction
+        props = Dict("layer" => "EnergiBrønn", "brønnNr" => "12345",
+                      "boretLengde" => 250.0, "diameterBorehull" => 139.0)
+        result = well_to_simulation_params(props)
+        @test result["case_type"] == "AGS"
+        @test result["well_id"] == "Well #12345"
+        @test result["parameters"]["well_depth"] == 250.0
+        @test result["sources"]["well_depth"] == "data"
+        @test result["parameters"]["borehole_diameter"] == 139.0
+        @test result["sources"]["borehole_diameter"] == "data"
+        # Defaults filled in for Oslo region
+        @test result["parameters"]["surface_temperature"] == 7.0
+        @test result["sources"]["surface_temperature"] == "default"
+        @test haskey(result, "parameter_order")
+        @test haskey(result, "metadata")
+
+        # Well Park → BTES with num_wells from metadata
+        props2 = Dict("layer" => "BrønnPark", "brønnParkNr" => "42",
+                       "antallEnergiBrønner" => 24)
+        result2 = well_to_simulation_params(props2)
+        @test result2["case_type"] == "BTES"
+        @test result2["well_id"] == "Well Park #42"
+        @test result2["parameters"]["num_wells_btes"] == 24
+        @test result2["sources"]["num_wells_btes"] == "data"
+
+        # Groundwater Well → Doublet
+        props3 = Dict("layer" => "GrunnvannBrønn", "brønnNr" => "99",
+                       "boretLengde" => 180.0)
+        result3 = well_to_simulation_params(props3)
+        @test result3["case_type"] == "DOUBLET"
+        @test result3["parameters"]["well_depth"] == 180.0
+
+        # Missing metadata → all defaults
+        props4 = Dict("layer" => "EnergiBrønn")
+        result4 = well_to_simulation_params(props4)
+        @test result4["case_type"] == "AGS"
+        @test result4["sources"]["well_depth"] == "default"
+    end
+
+    @testset "Simulation Validation" begin
+        using GeothermalViz
+
+        # Valid parameters
+        props = Dict("layer" => "EnergiBrønn", "boretLengde" => 200.0)
+        setup = well_to_simulation_params(props)
+        errors = validate_simulation_params(setup)
+        @test isempty(errors)
+
+        # Invalid: negative depth
+        setup["parameters"]["well_depth"] = -10.0
+        errors = validate_simulation_params(setup)
+        @test !isempty(errors)
+        @test any(e -> e[1] == "well_depth", errors)
+    end
+
+    @testset "Mock Simulation" begin
+        using GeothermalViz
+
+        # AGS mock
+        props = Dict("layer" => "EnergiBrønn", "boretLengde" => 200.0)
+        setup = well_to_simulation_params(props)
+        result = run_fimbul_simulation(setup)
+        @test result["status"] == "completed"
+        @test result["num_steps"] > 0
+        @test length(result["timestamps"]) == result["num_steps"]
+        @test haskey(result["well_data"], "Producer")
+
+        # BTES mock
+        props2 = Dict("layer" => "BrønnPark", "brønnParkNr" => "1")
+        setup2 = well_to_simulation_params(props2)
+        result2 = run_fimbul_simulation(setup2)
+        @test result2["status"] == "completed"
+        @test haskey(result2["well_data"], "BTES Array")
+
+        # Doublet mock
+        props3 = Dict("layer" => "GrunnvannBrønn", "brønnNr" => "1")
+        setup3 = well_to_simulation_params(props3)
+        result3 = run_fimbul_simulation(setup3)
+        @test result3["status"] == "completed"
+        @test haskey(result3["well_data"], "Producer")
+        @test haskey(result3["well_data"], "Injector")
+    end
 end
