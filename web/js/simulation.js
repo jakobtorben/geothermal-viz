@@ -5,6 +5,17 @@
  * Fimbul.jl geothermal simulations from well metadata.
  */
 
+// ── Physical constants ───────────────────────────────────────────────────────
+const WATER_VOLUMETRIC_HEAT_CAPACITY = 4.18e6;  // ρ·cp of water [J/(m³·K)]
+const ASSUMED_DELTA_T = 5.0;                     // assumed ΔT for flow rate estimate [K]
+const SECONDS_PER_HOUR = 3600.0;
+const DAYS_PER_YEAR = 365.25;
+
+// Mock simulation shape parameters
+const MOCK_TEMP_DECAY_FACTOR = 0.3;   // logarithmic production temperature decline
+const MOCK_SEASONAL_AMPLITUDE = 0.5;  // seasonal oscillation amplitude [K]
+const MOCK_BTES_WARMUP_FRACTION = 4;  // fraction of total steps for BTES warm-up
+
 // ── Simulation State ─────────────────────────────────────────────────────────
 const simState = {
     currentSetup: null,   // Current simulation parameter set from backend
@@ -201,7 +212,7 @@ function resolveParam(key, props) {
     }
     if (key === "flow_rate" && props.brønnpVEffekt != null) {
         const power = parseFloat(props.brønnpVEffekt);
-        const rate = (power / (4.18e6 * 5.0)) * 3600.0;
+        const rate = (power / (WATER_VOLUMETRIC_HEAT_CAPACITY * ASSUMED_DELTA_T)) * SECONDS_PER_HOUR;
         return { value: Math.max(1, Math.round(rate * 10) / 10), source: "data" };
     }
 
@@ -346,14 +357,14 @@ function mockSimulation(setup) {
     const params = setup.parameters;
     const nYears = params.num_years || 25;
     const nSteps = nYears * 12;
-    const dt = Array.from({ length: nSteps }, (_, i) => (i / nSteps) * nYears * 365.25);
+    const dt = Array.from({ length: nSteps }, (_, i) => (i / nSteps) * nYears * DAYS_PER_YEAR);
 
     const depth = params.well_depth || 200;
     const Ts = params.surface_temperature || 7.0;
     const grad = params.geothermal_gradient || 0.025;
     const Tb = Ts + grad * depth;
 
-    const Tprod = dt.map(t => Tb - 0.3 * Math.log(1 + t / 365) + 0.5 * Math.sin(2 * Math.PI * t / 365.25));
+    const Tprod = dt.map(t => Tb - MOCK_TEMP_DECAY_FACTOR * Math.log(1 + t / DAYS_PER_YEAR) + MOCK_SEASONAL_AMPLITUDE * Math.sin(2 * Math.PI * t / DAYS_PER_YEAR));
 
     const wellData = {};
     if (setup.case_type === "DOUBLET") {
@@ -372,7 +383,7 @@ function mockSimulation(setup) {
         };
     } else {
         const Tc = params.temperature_charge || 90;
-        const Tout = dt.map((t, i) => Ts + (Tc - Ts) * (1 - Math.exp(-i / (nSteps / 4))) * (0.5 + 0.5 * Math.sin(2 * Math.PI * t / 365.25)));
+        const Tout = dt.map((t, i) => Ts + (Tc - Ts) * (1 - Math.exp(-i / (nSteps / MOCK_BTES_WARMUP_FRACTION))) * (0.5 + MOCK_SEASONAL_AMPLITUDE * Math.sin(2 * Math.PI * t / DAYS_PER_YEAR)));
         wellData["BTES Array"] = {
             "Temperature [°C]": Tout,
             "Rate [L/s]": Array(nSteps).fill(params.rate_charge || 0.5),

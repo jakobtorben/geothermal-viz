@@ -17,6 +17,18 @@ Typical workflow:
 3. `run_fimbul_simulation(params)` — execute via Fimbul.jl (requires package)
 """
 
+# ── Physical constants for parameter estimation ──────────────────────────────
+
+const WATER_VOLUMETRIC_HEAT_CAPACITY = 4.18e6  # ρ·cp of water [J/(m³·K)]
+const ASSUMED_DELTA_T = 5.0                     # assumed temperature difference [K]
+const SECONDS_PER_HOUR = 3600.0
+const DAYS_PER_YEAR = 365.25
+
+# Mock simulation shape parameters
+const MOCK_TEMP_DECAY_FACTOR = 0.3   # logarithmic production temperature decline
+const MOCK_SEASONAL_AMPLITUDE = 0.5  # seasonal oscillation amplitude [K]
+const MOCK_BTES_WARMUP_FRACTION = 4  # fraction of total steps for BTES warm-up
+
 # ── Case type enum ───────────────────────────────────────────────────────────
 
 """Supported Fimbul.jl simulation case types."""
@@ -211,8 +223,8 @@ function _resolve_param(key, depth, diameter, n_energy_wells, heating_power)
         return (max(4, round(Int, n_energy_wells)), "data")
     end
     if key == "flow_rate" && heating_power !== nothing
-        # Rough estimate: Q ≈ P / (ρ·cp·ΔT), assume ΔT=5K, ρ·cp≈4.18e6
-        rate_m3h = heating_power / (4.18e6 * 5.0) * 3600.0
+        # Rough estimate: Q ≈ P / (ρ·cp·ΔT), converted from m³/s to m³/h
+        rate_m3h = heating_power / (WATER_VOLUMETRIC_HEAT_CAPACITY * ASSUMED_DELTA_T) * SECONDS_PER_HOUR
         return (max(1.0, round(rate_m3h; digits=1)), "data")
     end
 
@@ -361,6 +373,7 @@ function _run_fimbul_live(case_type, params)
             return Dict("status" => "error", "message" => "Unknown case type: $case_type")
         end
 
+        # Fimbul.simulate_reservoir expects (model, dt, forces, state0, parameters)
         result = Fimbul.simulate_reservoir(case[1:5])
         ws, states, t = result
         well_data = Dict{String,Any}()
@@ -390,7 +403,7 @@ end
 function _run_mock_simulation(case_type, params)
     n_years = round(Int, get(params, "num_years", 25))
     n_steps = n_years * 12  # monthly output
-    dt = range(0, n_years * 365.25; length=n_steps)
+    dt = range(0, n_years * DAYS_PER_YEAR; length=n_steps)
     timestamps = collect(Float64, dt)
 
     depth = get(params, "well_depth", 200.0)
@@ -398,8 +411,8 @@ function _run_mock_simulation(case_type, params)
     gradient = get(params, "geothermal_gradient", 0.025)
     T_bottom = T_surface + gradient * depth
 
-    # Produce plausible temperature curves
-    T_prod = [T_bottom - 0.3 * log(1 + t / 365.0) + 0.5 * sin(2π * t / 365.25) for t in timestamps]
+    # Produce plausible temperature curves with logarithmic decline and seasonal oscillation
+    T_prod = [T_bottom - MOCK_TEMP_DECAY_FACTOR * log(1 + t / DAYS_PER_YEAR) + MOCK_SEASONAL_AMPLITUDE * sin(2π * t / DAYS_PER_YEAR) for t in timestamps]
     T_inj  = fill(get(params, "temperature_inj", 25.0), n_steps)
     rate   = fill(get(params, "flow_rate", 25.0), n_steps)
 
@@ -420,7 +433,7 @@ function _run_mock_simulation(case_type, params)
         )
     else  # BTES
         T_charge = fill(get(params, "temperature_charge", 90.0), n_steps)
-        T_out = [T_surface + (get(params, "temperature_charge", 90.0) - T_surface) * (1 - exp(-i / (n_steps / 4))) * (0.5 + 0.5 * sin(2π * t / 365.25)) for (i, t) in enumerate(timestamps)]
+        T_out = [T_surface + (get(params, "temperature_charge", 90.0) - T_surface) * (1 - exp(-i / (n_steps / MOCK_BTES_WARMUP_FRACTION))) * (0.5 + MOCK_SEASONAL_AMPLITUDE * sin(2π * t / DAYS_PER_YEAR)) for (i, t) in enumerate(timestamps)]
         well_data["BTES Array"] = Dict{String,Any}(
             "Temperature [°C]" => T_out,
             "Rate [L/s]"       => fill(get(params, "rate_charge", 0.5), n_steps),
