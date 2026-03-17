@@ -66,12 +66,47 @@
             <div id="well-info">
                 <p class="no-selection">Click a well on the map to view details.</p>
             </div>
+            <div id="sim-setup-action" class="sim-setup-action" style="display:none;">
+                <button id="btn-setup-sim" class="btn-primary">⚡ Setup Simulation</button>
+            </div>
         </div>
     </div>
 
     <button id="sidebar-toggle" class="sidebar-toggle" title="Toggle sidebar">☰</button>
 
+    <!-- Simulation side panel (right) -->
+    <div id="sim-panel" class="sim-panel">
+        <div class="sim-panel-header">
+            <h2 id="sim-panel-title">Simulation Setup</h2>
+            <button id="btn-close-sim" class="btn-icon" title="Close">✕</button>
+        </div>
+
+        <!-- Mode tabs -->
+        <div class="sim-tabs">
+            <button class="sim-tab active" data-tab="setup">Setup</button>
+            <button class="sim-tab" data-tab="results">Results</button>
+        </div>
+
+        <!-- Setup mode -->
+        <div id="sim-setup" class="sim-tab-content active">
+            <div class="sim-case-info" id="sim-case-info"></div>
+            <div class="sim-params" id="sim-params"></div>
+            <div class="sim-actions">
+                <button id="btn-run-sim" class="btn-primary btn-run">▶ Run Simulation</button>
+            </div>
+            <div id="sim-status" class="sim-status" style="display:none;"></div>
+        </div>
+
+        <!-- Results mode -->
+        <div id="sim-results" class="sim-tab-content">
+            <div id="sim-results-content">
+                <p class="no-selection">Run a simulation to view results here.</p>
+            </div>
+        </div>
+    </div>
+
     <script src="vendor/maplibre-gl.js"></script>
     <script src="js/app.js"></script>
+    <script src="js/simulation.js"></script>
 </body>
 </html>

@@ -9,8 +9,8 @@
 
 // ── Configuration ──────────────────────────────────────────────────────────
 const CONFIG = {
-    // Try API server first, fall back to static files
-    apiBase: null, // Set to e.g. "http://localhost:8080" when using Julia server
+    // API is served by the Julia server (same origin)
+    apiBase: "",
     dataPath: "processed_data",
 
     map: {
@@ -79,17 +79,15 @@ const state = {
  * Load GeoJSON data from the Julia API server or static files.
  */
 async function loadBoreholeData() {
-    // Try Julia API server first
-    if (CONFIG.apiBase) {
-        try {
-            const resp = await fetch(`${CONFIG.apiBase}/api/data/all_boreholes`);
-            if (resp.ok) return resp.json();
-        } catch (e) {
-            console.warn("API server not available, falling back to static files");
-        }
+    // Load from Julia API server
+    try {
+        const resp = await fetch(`/api/data/all_boreholes`);
+        if (resp.ok) return resp.json();
+    } catch (e) {
+        console.warn("API server not available, falling back to static files");
     }
 
-    // Fall back to static file
+    // Fall back to static file (for development without Julia server)
     const resp = await fetch(`${CONFIG.dataPath}/all_boreholes.geojson`);
     if (!resp.ok) throw new Error(`Failed to load data: ${resp.status}`);
     return resp.json();
