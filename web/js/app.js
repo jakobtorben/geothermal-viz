@@ -494,6 +494,7 @@ async function main() {
 window.GeothermalViz = {
     state,
     registerExtension,
+    emitEvent,
     connectToJulia,
     CONFIG
 };
