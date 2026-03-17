@@ -449,9 +449,10 @@ function _run_fimbul_live(case_type, params)
             _sim_log_push!("Creating AGS case with well depth=$(get(params, "well_depth", "?"))m...")
             # Compute hz (cell heights per depth layer) from num_segments.
             # Fimbul.ags uses a `depths` vector that defines layer boundaries.
-            # We use the default depths and distribute num_segments across
-            # layers proportionally to their thickness.
-            depths = [0.0, 1500.0, 2300.0, 2400.0, 2800.0]
+            # We use the default Fimbul AGS depths (matching ags.jl defaults)
+            # and distribute num_segments across layers proportionally to
+            # their thickness.
+            depths = [0.0, 1500.0, 2300.0, 2400.0, 2800.0]  # Fimbul AGS default layer boundaries [m]
             dz = diff(depths)
             total = sum(dz)
             # Allocate at least 1 cell per layer, rest proportional
@@ -477,10 +478,10 @@ function _run_fimbul_live(case_type, params)
             )
         elseif case_type == "BTES"
             _sim_log_push!("Creating BTES case with $(get(params, "num_wells_btes", "?")) wells...")
-            # TODO: map num_segments to Fimbul n_z (per-layer cell counts).
-            # The BTES n_z parameter is an array of cells-per-layer, which
-            # makes a simple 1-to-1 mapping non-trivial. For now we keep the
-            # Fimbul defaults and only use num_segments for the 3D visualisation.
+            # Note: num_segments is shown in the BTES setup for the 3D
+            # wellbore visualisation only. Mapping it to Fimbul's n_z
+            # (a per-layer cell count array) requires a more complex mapping
+            # that is left as future work.
             case = Fimbul.btes(;
                 num_wells            = round(Int, params["num_wells_btes"]),
                 num_sectors          = round(Int, params["num_sectors"]),
