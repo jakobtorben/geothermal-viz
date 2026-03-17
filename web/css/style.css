@@ -656,3 +656,93 @@ body {
     display: block;
     width: 100%;
 }
+
+/* ── Reservoir playback controls ──────────────────────────────────────── */
+
+.sim-playback-controls {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+}
+
+.sim-step-btn {
+    width: 32px;
+    height: 32px;
+    border: 1px solid #cbd5e1;
+    border-radius: 5px;
+    background: white;
+    cursor: pointer;
+    font-size: 0.82em;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #475569;
+    transition: background 0.15s, border-color 0.15s;
+    padding: 0;
+    flex-shrink: 0;
+}
+
+.sim-step-btn:hover {
+    background: #f1f5f9;
+    border-color: #94a3b8;
+}
+
+.sim-step-slider {
+    flex: 1;
+    min-width: 60px;
+    accent-color: #3b82f6;
+}
+
+.sim-step-label {
+    font-size: 0.78em;
+    color: #64748b;
+    white-space: nowrap;
+}
+
+.sim-delta-label {
+    font-size: 0.82em;
+    color: #475569;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.sim-delta-label input {
+    accent-color: #3b82f6;
+}
+
+/* ── Reservoir image ──────────────────────────────────────────────────── */
+
+.sim-reservoir-image-wrap {
+    width: 100%;
+    min-height: 200px;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    overflow: hidden;
+    position: relative;
+    background: #fafbfc;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.sim-reservoir-image {
+    display: block;
+    width: 100%;
+    height: auto;
+}
+
+.sim-reservoir-loading {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 0.85em;
+    color: #64748b;
+    background: rgba(255, 255, 255, 0.9);
+    padding: 8px 16px;
+    border-radius: 6px;
+}

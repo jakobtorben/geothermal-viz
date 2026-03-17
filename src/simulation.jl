@@ -18,6 +18,10 @@ Typical workflow:
 
 using Fimbul
 using Dates
+using CairoMakie
+using Jutul
+using JutulDarcy
+import Base64: base64encode
 
 # ── Async simulation state ───────────────────────────────────────────────────
 
@@ -25,6 +29,14 @@ const _sim_lock = ReentrantLock()
 const _sim_log = Ref{Vector{String}}(String[])
 const _sim_running = Ref{Bool}(false)
 const _sim_result = Ref{Any}(nothing)
+
+# ── Server-side state for lazy reservoir image rendering ─────────────────────
+
+const _sim_case = Ref{Any}(nothing)
+const _sim_states = Ref{Any}(nothing)
+const _sim_state0 = Ref{Any}(nothing)
+const _image_cache = Dict{String, String}()
+const _colorrange_cache = Dict{String, Tuple{Float64, Float64}}()
 
 """Push a log message to the simulation log (thread-safe)."""
 function _sim_log_push!(msg::AbstractString)
@@ -468,6 +480,13 @@ function _run_fimbul_live(case_type, params)
 
         _sim_log_push!("Simulation completed. Extracting results...")
 
+        # Store case and states for lazy reservoir image rendering
+        _sim_case[] = case
+        _sim_states[] = results.states
+        _sim_state0[] = get(case.state0, :Reservoir, nothing)
+        empty!(_image_cache)
+        empty!(_colorrange_cache)
+
         # Extract well data from results with unit conversion
         well_data = Dict{String,Any}()
         for (wname, wdata) in pairs(results.wells)
@@ -589,4 +608,113 @@ function _run_mock_simulation(case_type, params)
         "num_steps"      => n_steps,
         "reservoir_vars" => reservoir_vars,
     )
+end
+
+# ── Reservoir image rendering (following FimbulApp.jl pattern) ────────────────
+
+"""
+    _convert_reservoir_variable(var, values; delta=false)
+
+Convert reservoir state variable from SI units to user-friendly units.
+Returns `(converted_values, unit_label)`.
+"""
+function _convert_reservoir_variable(var::AbstractString, values; delta::Bool=false)
+    ln = lowercase(var)
+    if occursin("temperature", ln)
+        if delta
+            return values, "°C"  # K delta = °C delta
+        else
+            return values .- _K_to_C, "°C"
+        end
+    elseif occursin("pressure", ln)
+        return values .* _Pa_to_bar, "bar"
+    else
+        return values, ""
+    end
+end
+
+"""
+    _get_colorrange(var, delta)
+
+Compute global min/max color range across all stored timesteps for consistent coloring.
+Results are cached for performance.
+"""
+function _get_colorrange(var::AbstractString, delta::Bool)
+    cache_key = "$var:$delta"
+    haskey(_colorrange_cache, cache_key) && return _colorrange_cache[cache_key]
+
+    states = _sim_states[]
+    state0 = _sim_state0[]
+    isnothing(states) && return (0.0, 1.0)
+
+    sym = Symbol(var)
+    global_min = Inf
+    global_max = -Inf
+    for i in 1:length(states)
+        s = if delta && !isnothing(state0)
+            JutulDarcy.delta_state(state0, states[i])
+        else
+            states[i]
+        end
+        vals, _ = _convert_reservoir_variable(var, s[sym]; delta=delta)
+        lo, hi = extrema(vals)
+        global_min = min(global_min, lo)
+        global_max = max(global_max, hi)
+    end
+
+    result = (global_min, global_max)
+    _colorrange_cache[cache_key] = result
+    return result
+end
+
+"""
+    render_reservoir_image(var, step; delta=false)
+
+Render a reservoir state image as a base64-encoded PNG string.
+Uses CairoMakie + Jutul.plot_cell_data! for 3D visualization.
+Results are cached server-side for performance.
+
+# Arguments
+- `var::AbstractString`: Variable name (e.g. "Temperature", "Pressure")
+- `step::Int`: 1-based timestep index
+- `delta::Bool`: If true, show difference from initial state
+"""
+function render_reservoir_image(var::AbstractString, step::Int; delta::Bool=false)
+    cache_key = "$var:$step:$delta"
+    haskey(_image_cache, cache_key) && return _image_cache[cache_key]
+
+    case = _sim_case[]
+    states = _sim_states[]
+    (isnothing(case) || isnothing(states)) && return ""
+    (step < 1 || step > length(states)) && return ""
+
+    try
+        mesh = Fimbul.physical_representation(Fimbul.reservoir_model(case.model).data_domain)
+        state = states[step]
+        title = "$var at step $step"
+        if delta
+            state0 = _sim_state0[]
+            isnothing(state0) && return ""
+            state = JutulDarcy.delta_state(state0, state)
+            title = "Δ $var at step $step"
+        end
+        plot_vals, unit_label = _convert_reservoir_variable(var, state[Symbol(var)]; delta=delta)
+        if !isempty(unit_label)
+            title *= " [$unit_label]"
+        end
+        cmin, cmax = _get_colorrange(var, delta)
+        fig = Figure(size = (800, 600))
+        ax = Axis3(fig[1, 1], title = title, aspect = :data, zreversed = true)
+        p = Jutul.plot_cell_data!(ax, mesh, plot_vals, outer=true,
+            colormap=:seaborn_icefire_gradient, colorrange=(cmin, cmax))
+        Colorbar(fig[1, 2], p)
+        io = IOBuffer()
+        show(io, MIME("image/png"), fig)
+        img = base64encode(take!(io))
+        _image_cache[cache_key] = img
+        return img
+    catch e
+        @warn "Failed to render reservoir image for $var step $step (delta=$delta): $e"
+        return ""
+    end
 end

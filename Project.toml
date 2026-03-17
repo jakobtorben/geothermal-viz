@@ -4,15 +4,23 @@ version = "0.1.0"
 
 [deps]
 ArchGDAL = "c9ce4bd3-c3d5-55b8-8973-c0e20141b8c3"
+Base64 = "2a0f44e3-6c83-55bd-87e4-b1978d98bd5f"
+CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 Fimbul = "cac51d78-27de-4708-bd2b-bd13a82f652b"
 GeoFormatTypes = "68eda718-8dee-11e9-39e7-89f7f65f511f"
 HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
 JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
+Jutul = "2b460a1a-8a2b-45b2-b125-b5c536396eb9"
+JutulDarcy = "82210473-ab04-4dce-b31b-11573c4f8e0a"
 
 [compat]
+Base64 = "1.11.0"
+CairoMakie = "0.15.9"
 Fimbul = "0.3.3"
 GeoFormatTypes = "0.4.5"
+Jutul = "0.4.18"
+JutulDarcy = "0.3.4"
 
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"

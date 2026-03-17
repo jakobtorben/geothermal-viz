@@ -18,6 +18,11 @@ const simState = {
     isRunning: false,
     pollTimer: null,      // Polling timer for async simulation
     lastLogCount: 0,      // Track last seen log line count
+    // Reservoir image state
+    currentStep: 0,
+    totalSteps: 0,
+    imageCache: {},       // Client-side reservoir image cache
+    imageLoading: false,
 };
 
 // ── Initialisation ───────────────────────────────────────────────────────────
@@ -305,6 +310,48 @@ function renderResultsInPanel(result) {
     }
     html += `</div>`;
 
+    // Reservoir state section
+    if (hasReservoirVars) {
+        simState.totalSteps = result.num_steps;
+        simState.currentStep = 0;
+        simState.imageCache = {};
+
+        html += `<div class="sim-result-section">`;
+        html += `<h3>🗺️ Reservoir States</h3>`;
+        html += `<div class="sim-result-controls">`;
+        html += `<div class="sim-result-control-row">`;
+        html += `<label>Variable:</label>`;
+        html += `<select id="reservoir-var-select" class="sim-result-select">`;
+        for (const v of result.reservoir_vars) {
+            html += `<option value="${v}">${v}</option>`;
+        }
+        html += `</select></div>`;
+        html += `</div>`;
+
+        // Step navigation controls
+        html += `<div class="sim-playback-controls">`;
+        html += `<button class="sim-step-btn" id="step-first" title="First step">⏮</button>`;
+        html += `<button class="sim-step-btn" id="step-prev" title="Previous step">◀</button>`;
+        html += `<button class="sim-step-btn" id="step-next" title="Next step">▶</button>`;
+        html += `<button class="sim-step-btn" id="step-last" title="Last step">⏭</button>`;
+        html += `<input type="range" class="sim-step-slider" id="step-slider" min="0" max="${Math.max(0, result.num_steps - 1)}" value="0">`;
+        html += `<span class="sim-step-label" id="step-label">Step 1 / ${result.num_steps}</span>`;
+        html += `</div>`;
+
+        // Delta checkbox
+        html += `<div class="sim-result-controls">`;
+        html += `<label class="sim-delta-label"><input type="checkbox" id="show-delta"> Show difference from initial state</label>`;
+        html += `</div>`;
+
+        // Reservoir image display
+        html += `<div class="sim-reservoir-image-wrap">`;
+        html += `<div id="reservoir-loading" class="sim-reservoir-loading" style="display:none;">Loading image…</div>`;
+        html += `<img id="reservoir-image" class="sim-reservoir-image" alt="Reservoir state visualization" style="display:none;">`;
+        html += `<p id="reservoir-placeholder" class="no-selection">Select a variable and step to view reservoir state.</p>`;
+        html += `</div>`;
+        html += `</div>`;
+    }
+
     // Well output section
     html += `<div class="sim-result-section">`;
     html += `<h3>🧪 Well Output</h3>`;
@@ -328,7 +375,7 @@ function renderResultsInPanel(result) {
     // Set up variable dropdown for first well
     populateVarSelect(result, wellNames[0]);
 
-    // Event listeners
+    // Well output event listeners
     document.getElementById("result-well-select").addEventListener("change", (e) => {
         populateVarSelect(result, e.target.value);
         drawResultChart(result);
@@ -337,8 +384,112 @@ function renderResultsInPanel(result) {
         drawResultChart(result);
     });
 
-    // Draw initial chart
+    // Reservoir controls event listeners
+    if (hasReservoirVars) {
+        document.getElementById("reservoir-var-select").addEventListener("change", () => {
+            fetchReservoirImage();
+        });
+        document.getElementById("show-delta").addEventListener("change", () => {
+            fetchReservoirImage();
+        });
+        document.getElementById("step-first").addEventListener("click", () => setStep(0));
+        document.getElementById("step-prev").addEventListener("click", () => setStep(simState.currentStep - 1));
+        document.getElementById("step-next").addEventListener("click", () => setStep(simState.currentStep + 1));
+        document.getElementById("step-last").addEventListener("click", () => setStep(simState.totalSteps - 1));
+        document.getElementById("step-slider").addEventListener("input", (e) => {
+            setStep(parseInt(e.target.value));
+        });
+
+        // Fetch initial reservoir image
+        fetchReservoirImage();
+    }
+
+    // Draw initial well chart
     drawResultChart(result);
+}
+
+// ── Step navigation ──────────────────────────────────────────────────────────
+
+function setStep(step) {
+    step = Math.max(0, Math.min(step, simState.totalSteps - 1));
+    simState.currentStep = step;
+    const slider = document.getElementById("step-slider");
+    if (slider) slider.value = step;
+    const label = document.getElementById("step-label");
+    if (label) label.textContent = `Step ${step + 1} / ${simState.totalSteps}`;
+    fetchReservoirImage();
+}
+
+// ── Reservoir image fetching ─────────────────────────────────────────────────
+
+async function fetchReservoirImage() {
+    const varSelect = document.getElementById("reservoir-var-select");
+    const deltaCheck = document.getElementById("show-delta");
+    if (!varSelect) return;
+
+    const varName = varSelect.value;
+    const step = simState.currentStep;
+    const delta = deltaCheck ? deltaCheck.checked : false;
+    if (!varName || simState.totalSteps === 0) return;
+
+    const cacheKey = `${varName}:${step}:${delta}`;
+    const imgEl = document.getElementById("reservoir-image");
+    const loadingEl = document.getElementById("reservoir-loading");
+    const placeholderEl = document.getElementById("reservoir-placeholder");
+
+    // Check client cache
+    if (simState.imageCache[cacheKey]) {
+        if (imgEl) {
+            imgEl.src = simState.imageCache[cacheKey];
+            imgEl.style.display = "block";
+        }
+        if (loadingEl) loadingEl.style.display = "none";
+        if (placeholderEl) placeholderEl.style.display = "none";
+        return;
+    }
+
+    // Show loading
+    if (loadingEl) loadingEl.style.display = "block";
+    if (imgEl) imgEl.style.display = "none";
+    if (placeholderEl) placeholderEl.style.display = "none";
+    simState.imageLoading = true;
+
+    try {
+        const url = `/api/simulation/reservoir_image/${encodeURIComponent(varName)}/${step}?delta=${delta}`;
+        const resp = await fetch(url);
+        if (resp.ok) {
+            const base64 = await resp.text();
+            if (base64) {
+                const dataUri = `data:image/png;base64,${base64}`;
+                simState.imageCache[cacheKey] = dataUri;
+                // Only update if still on same step/var/delta
+                const currentVar = document.getElementById("reservoir-var-select");
+                const currentDelta = document.getElementById("show-delta");
+                if (currentVar && currentVar.value === varName &&
+                    simState.currentStep === step &&
+                    (!currentDelta || currentDelta.checked === delta)) {
+                    if (imgEl) {
+                        imgEl.src = dataUri;
+                        imgEl.style.display = "block";
+                    }
+                }
+            }
+        } else {
+            if (placeholderEl) {
+                placeholderEl.textContent = "No reservoir image available for this step.";
+                placeholderEl.style.display = "block";
+            }
+        }
+    } catch (e) {
+        console.error("Failed to fetch reservoir image:", e);
+        if (placeholderEl) {
+            placeholderEl.textContent = "Failed to load reservoir image.";
+            placeholderEl.style.display = "block";
+        }
+    } finally {
+        simState.imageLoading = false;
+        if (loadingEl) loadingEl.style.display = "none";
+    }
 }
 
 function populateVarSelect(result, wellName) {

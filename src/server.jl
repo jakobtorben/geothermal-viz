@@ -124,6 +124,37 @@ function start_server(; host::AbstractString="127.0.0.1", port::Int=8080,
                             body=JSON3.write(status))
     end)
 
+    # Simulation: render reservoir state image on demand
+    HTTP.register!(router, "GET", "/api/simulation/reservoir_image/{var}/{step}", function(req)
+        try
+            params = HTTP.getparams(req)
+            var = params["var"]
+            step_str = params["step"]
+            step = tryparse(Int, step_str)
+            isnothing(step) && return HTTP.Response(400, "Invalid step: $step_str")
+            step < 0 && return HTTP.Response(400, "Step must be non-negative")
+            step += 1  # Convert 0-indexed (frontend) to 1-indexed (Julia)
+            # Check for delta query parameter
+            uri = HTTP.URI(req.target)
+            query = uri.query
+            delta = occursin("delta=true", query)
+            img = render_reservoir_image(var, step; delta=delta)
+            if isempty(img)
+                return HTTP.Response(404, ["Content-Type" => "text/plain",
+                                           "Access-Control-Allow-Origin" => "*"],
+                                    body="")
+            end
+            return HTTP.Response(200, ["Content-Type" => "text/plain",
+                                       "Access-Control-Allow-Origin" => "*"],
+                                body=img)
+        catch e
+            @error "Reservoir image error" exception=(e, catch_backtrace())
+            return HTTP.Response(500, ["Content-Type" => "text/plain",
+                                       "Access-Control-Allow-Origin" => "*"],
+                                body="Error rendering image: $(sprint(showerror, e))")
+        end
+    end)
+
     # CORS preflight for simulation endpoints
     HTTP.register!(router, "OPTIONS", "/api/simulation/*", function(req)
         return HTTP.Response(204, [
