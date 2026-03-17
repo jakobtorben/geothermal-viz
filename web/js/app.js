@@ -111,15 +111,6 @@ function initMap() {
                     ],
                     tileSize: 256,
                     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-                },
-                "terrain-source": {
-                    type: "raster-dem",
-                    tiles: [
-                        "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
-                    ],
-                    tileSize: 256,
-                    encoding: "terrarium",
-                    attribution: '<a href="https://github.com/tilezen/joerd">Tilezen Joerd</a>'
                 }
             },
             layers: [
@@ -130,11 +121,7 @@ function initMap() {
                     minzoom: 0,
                     maxzoom: 19
                 }
-            ],
-            terrain: {
-                source: "terrain-source",
-                exaggeration: 1.5
-            }
+            ]
         },
         center: CONFIG.map.center,
         zoom: CONFIG.map.zoom,
@@ -228,22 +215,48 @@ function addBoreholeLayers(map, geojson) {
 }
 
 /**
- * Add 3D building layer using OpenStreetMap data.
+ * Add terrain data and 3D building layer.
+ * Terrain uses AWS elevation tiles; buildings require a vector tile source.
  */
-function add3DBuildings(map) {
-    map.addSource("openmaptiles", {
-        type: "vector",
-        url: "https://api.maptiler.com/tiles/v3/tiles.json?key=get_your_own_OpIi9ZULNHzrESv6T2vL"
-    });
+function addTerrainAnd3DBuildings(map) {
+    // Add terrain elevation source
+    try {
+        map.addSource("terrain-source", {
+            type: "raster-dem",
+            tiles: [
+                "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
+            ],
+            tileSize: 256,
+            encoding: "terrarium",
+            attribution: '<a href="https://github.com/tilezen/joerd">Tilezen Joerd</a>'
+        });
+        map.setTerrain({ source: "terrain-source", exaggeration: 1.5 });
+    } catch (e) {
+        console.warn("Could not enable terrain:", e.message);
+    }
 
-    // Since we may not have a valid MapTiler key, we add buildings
-    // using OSM building footprints via Overpass, or as a visual layer hint.
-    // For a production deployment, replace with a valid vector tile source.
-
-    // Alternative: use the 3D terrain already enabled for elevation,
-    // and add a fill-extrusion layer for buildings when vector tiles are available.
-    console.info("3D buildings: Enable with a vector tile source (e.g., MapTiler, OpenMapTiles).");
-    console.info("Terrain 3D is active via the elevation source.");
+    // Add 3D buildings from OpenFreeMap vector tiles
+    try {
+        map.addSource("openmaptiles", {
+            type: "vector",
+            url: "https://tiles.openfreemap.org/planet"
+        });
+        map.addLayer({
+            id: "3d-buildings",
+            source: "openmaptiles",
+            "source-layer": "building",
+            type: "fill-extrusion",
+            minzoom: 14,
+            paint: {
+                "fill-extrusion-color": "#ddd",
+                "fill-extrusion-height": ["get", "render_height"],
+                "fill-extrusion-base": ["get", "render_min_height"],
+                "fill-extrusion-opacity": 0.6
+            }
+        });
+    } catch (e) {
+        console.warn("Could not add 3D buildings:", e.message);
+    }
 }
 
 // ── Well Selection & Info ──────────────────────────────────────────────────
@@ -456,12 +469,12 @@ async function main() {
         setupSidebarToggle();
         setupLayerControls();
 
-        // Load data when map is ready
-        map.on("load", async () => {
+        // Load data once map style is parsed (does not wait for tile loading)
+        map.once("style.load", async () => {
             try {
                 const geojson = await loadBoreholeData();
                 addBoreholeLayers(map, geojson);
-                add3DBuildings(map);
+                addTerrainAnd3DBuildings(map);
                 hideLoading();
                 emitEvent("dataLoaded", { featureCount: geojson.features.length });
             } catch (err) {

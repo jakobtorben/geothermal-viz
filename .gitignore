@@ -3,6 +3,11 @@ Manifest.toml
 
 # Processed data (generated from raw data)
 processed_data/
+web/processed_data/
+
+# Node
+node_modules/
+package-lock.json
 
 # OS
 .DS_Store

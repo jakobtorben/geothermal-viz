@@ -59,7 +59,8 @@ function extract_layer_features(layer)
         x = AG.getx(geom, 0)
         y = AG.gety(geom, 0)
         coords = AG.reproject((x, y), SOURCE_CRS, TARGET_CRS)
-        # EPSG:4326 returns (lat, lon); GeoJSON uses (lon, lat)
+        # reproject returns EPSG:4326 axis order (latitude, longitude)
+        # GeoJSON requires [longitude, latitude]
         lat, lon = coords[1], coords[2]
 
         props = extract_properties(feature, layer)
