@@ -1,0 +1,15 @@
+# Julia
+Manifest.toml
+
+# Processed data (generated from raw data)
+processed_data/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
