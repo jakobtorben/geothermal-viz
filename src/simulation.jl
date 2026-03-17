@@ -34,16 +34,18 @@ function _sim_log_push!(msg::AbstractString)
 end
 
 """
-    _capture_stdout(f) -> String
+    _capture_output(f) -> result
 
 Run `f()` while capturing everything written to stdout and stderr.
-Returns the captured output as a String.
+Captured lines are pushed to the simulation log via `_sim_log_push!`.
 """
-function _capture_stdout(f)
+function _capture_output(f)
+    original_stdout = stdout
+    original_stderr = stderr
     out_rd, out_wr = redirect_stdout()
     err_rd, err_wr = redirect_stderr()
     output = Channel{String}(Inf)
-    # Reader tasks: forward lines to both real stdout and log
+    # Reader tasks: forward lines to the channel
     reader_out = @async begin
         for line in eachline(out_rd)
             put!(output, line)
@@ -63,8 +65,8 @@ function _capture_stdout(f)
     try
         return f()
     finally
-        redirect_stdout()
-        redirect_stderr()
+        redirect_stdout(original_stdout)
+        redirect_stderr(original_stderr)
         close(out_wr)
         close(err_wr)
         wait(reader_out)
@@ -460,7 +462,7 @@ function _run_fimbul_live(case_type, params)
         _sim_log_push!("This may take several minutes depending on model size.")
 
         # Simulate while capturing stdout/stderr (Fimbul progress bars etc.)
-        results = _capture_stdout() do
+        results = _capture_output() do
             Fimbul.simulate_reservoir(case)
         end
 
