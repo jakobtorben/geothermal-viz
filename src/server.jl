@@ -99,10 +99,16 @@ function start_server(; host::AbstractString="127.0.0.1", port::Int=8080,
 
     # Serve static files and handle all other routes
     function handle_request(req)
-        # Try router first
-        resp = router(req)
-        if resp.status != 404
-            return resp
+        # Try API router first; fall back to static files on 404
+        try
+            resp = router(req)
+            if resp.status != 404
+                return resp
+            end
+        catch e
+            @error "Route handler error" exception=(e, catch_backtrace())
+            return HTTP.Response(500, ["Content-Type" => "application/json"],
+                                body=JSON3.write(Dict("error" => sprint(showerror, e))))
         end
 
         # Serve static files
