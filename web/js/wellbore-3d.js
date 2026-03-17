@@ -38,12 +38,15 @@
     const WELL_HALF      = 12;      // half-width of single-well column (m)
     const PARK_WELL_HALF = 5;       // half-width per well in a wellpark (m)
     const CAP_HEIGHT_FRAC = 0.02;   // wellhead cap as fraction of total height
+    const MIN_SEGMENTS   = 2;       // must match PARAM_METADATA min
+    const MAX_SEGMENTS   = 100;     // must match PARAM_METADATA max
+    const MAX_RENDERED_WELLS = 80;  // cap for BTES rendering (performance)
     const ANIM_DURATION  = 1200;    // rise animation duration (ms)
     const ANIM_DELAY     = 500;     // delay before animation starts (ms)
     const FLY_ZOOM       = 15.5;
     const FLY_PITCH      = 60;
 
-    // Well segment colours – gradient from warm (bottom/deep) to cool (top/shallow)
+    // Well segment colours – gradient from dark (bottom/deep) to light (top/shallow)
     const SEG_COLOR_DEEP    = [0.22, 0.36, 0.55];  // dark blue-grey (deep)
     const SEG_COLOR_SHALLOW = [0.45, 0.68, 0.82];  // light blue (shallow)
     const CAP_COLOR         = [0.85, 0.25, 0.20];  // red wellhead cap
@@ -193,11 +196,11 @@
     function buildVertices(center, scale, params, caseType, progress) {
         const arr   = [];
         const depth = params.well_depth || 200;
-        const nSeg  = Math.max(2, Math.min(Math.round(params.num_segments || 10), 100));
+        const nSeg  = Math.max(MIN_SEGMENTS, Math.min(Math.round(params.num_segments || 10), MAX_SEGMENTS));
 
         let positions, hw;
         if (caseType === "BTES") {
-            const n  = Math.min(params.num_wells_btes || 48, 80);
+            const n  = Math.min(params.num_wells_btes || 48, MAX_RENDERED_WELLS);
             const sp = params.well_spacing || 5;
             hw = PARK_WELL_HALF * scale;
             const displaySpacing = Math.max(PARK_WELL_HALF * 2.5, sp * (n > 20 ? 4 : 6));
