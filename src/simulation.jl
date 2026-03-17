@@ -213,6 +213,8 @@ const PARAM_METADATA = Dict{String,Dict{String,Any}}(
     "rock_heat_capacity"        => Dict{String,Any}("label" => "Rock heat capacity",        "unit" => "J/(kg·K)","min" => 100,   "max" => 2000,  "step" => 50,    "tooltip" => "Specific heat capacity of the rock matrix",                  "group" => "Rock Properties"),
     "porosity"                  => Dict{String,Any}("label" => "Porosity",                  "unit" => "–",       "min" => 0.001, "max" => 0.5,   "step" => 0.01,  "tooltip" => "Rock porosity (volume fraction)",                            "group" => "Rock Properties"),
     "permeability"              => Dict{String,Any}("label" => "Permeability",              "unit" => "mD",      "min" => 0.001, "max" => 5000,  "step" => 1,     "tooltip" => "Rock permeability in millidarcys",                           "group" => "Rock Properties"),
+    # Grid
+    "num_segments"              => Dict{String,Any}("label" => "Well segments",             "unit" => "–",       "min" => 2,     "max" => 100,   "step" => 1,     "tooltip" => "Number of vertical grid cells along the well",               "group" => "Grid"),
     # Operation
     "temperature_inj"           => Dict{String,Any}("label" => "Injection temperature",     "unit" => "°C",      "min" => 5,     "max" => 100,   "step" => 1,     "tooltip" => "Temperature of injected fluid",                              "group" => "Operation"),
     "flow_rate"                 => Dict{String,Any}("label" => "Flow rate",                 "unit" => "m³/h",    "min" => 1,     "max" => 500,   "step" => 1,     "tooltip" => "Volumetric flow rate",                                       "group" => "Operation"),
@@ -233,14 +235,14 @@ const CASE_PARAMS = Dict{SimCaseType, Vector{String}}(
         "surface_temperature", "geothermal_gradient",
         "rock_thermal_conductivity", "rock_heat_capacity",
         "porosity", "permeability",
-        "temperature_inj", "flow_rate", "num_years",
+        "temperature_inj", "flow_rate", "num_segments", "num_years",
     ],
     SIM_BTES => [
         "well_depth", "num_wells_btes", "num_sectors", "well_spacing",
         "surface_temperature", "geothermal_gradient",
         "rock_thermal_conductivity", "rock_heat_capacity",
         "temperature_charge", "temperature_discharge",
-        "rate_charge", "num_years",
+        "rate_charge", "num_segments", "num_years",
     ],
 )
 
@@ -251,6 +253,7 @@ const PARAM_DEFAULTS = Dict{String,Any}(
     "temperature_inj"           => 25.0,
     "flow_rate"                 => 25.0,
     "num_years"                 => 25,
+    "num_segments"              => 10,
     "num_wells_btes"            => 48,
     "num_sectors"               => 6,
     "well_spacing"              => 5.0,

@@ -463,6 +463,45 @@ body {
     color: #bbb;
 }
 
+/* Visualization options */
+.sim-viz-options {
+    margin-top: 14px;
+    padding-top: 10px;
+    border-top: 1px solid #eee;
+}
+
+.sim-viz-options h3 {
+    font-size: 0.82em;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #888;
+    margin-bottom: 8px;
+}
+
+.viz-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.85em;
+    color: #444;
+    cursor: pointer;
+    padding: 4px 0;
+}
+
+.viz-opacity-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.82em;
+    color: #666;
+    padding: 6px 0 2px 22px;
+}
+
+.viz-opacity-wrap input[type="range"] {
+    flex: 1;
+    height: 4px;
+}
+
 /* Actions */
 .sim-actions {
     padding: 12px 0;
