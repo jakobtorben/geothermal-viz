@@ -703,7 +703,7 @@ function drawWellOutputChart(canvasId, timestamps, values, label) {
     ctx.translate(15, pad.top + plotH / 2);
     ctx.rotate(-Math.PI / 2);
     const varUnits = { "temperature": "°C", "mass_rate": "kg/s", "pressure": "bar" };
-    const unit = varUnits[label] || "";
+    const unit = varUnits[label.toLowerCase()] || "";
     ctx.fillText(`${label} [${unit}]`, 0, 0);
     ctx.restore();
 

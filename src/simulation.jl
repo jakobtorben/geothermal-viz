@@ -29,7 +29,7 @@ const _sim_result = Ref{Any}(nothing)
 """Push a log message to the simulation log (thread-safe)."""
 function _sim_log_push!(msg::AbstractString)
     lock(_sim_lock) do
-        push!(_sim_log[], "[$(Dates.format(now(), "HH:MM:SS"))] $msg")
+        push!(_sim_log[], "[$(Dates.format(now(), "HH:mm:ss"))] $msg")
     end
 end
 
@@ -561,7 +561,7 @@ function _generate_mock_reservoir_states(case_type, params, timestamps)
         pressure = Float64[]
         temperature = Float64[]
 
-        for (k, zi) in enumerate(z_vals), (j, yi) in enumerate(y_vals), (i, xi) in enumerate(x_vals)
+        for zi in z_vals, yi in y_vals, xi in x_vals
             r = sqrt(xi^2 + yi^2)
             z_depth = abs(zi)
 
