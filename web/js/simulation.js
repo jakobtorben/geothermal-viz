@@ -18,11 +18,6 @@ const simState = {
     isRunning: false,
     pollTimer: null,      // Polling timer for async simulation
     lastLogCount: 0,      // Track last seen log line count
-    // Results overlay state
-    currentStep: 0,
-    totalSteps: 0,
-    playTimer: null,
-    isPlaying: false,
 };
 
 // ── Initialisation ───────────────────────────────────────────────────────────
@@ -45,9 +40,6 @@ function initSimulationPanel() {
     document.getElementById("btn-run-sim").addEventListener("click", () => {
         runSimulation();
     });
-
-    // Results overlay controls
-    initResultsOverlay();
 }
 
 // ── Panel open/close ─────────────────────────────────────────────────────────
@@ -165,11 +157,6 @@ function switchSimTab(tab) {
     document.querySelectorAll(".sim-tab").forEach(t => t.classList.toggle("active", t.dataset.tab === tab));
     document.getElementById("sim-setup").classList.toggle("active", tab === "setup");
     document.getElementById("sim-results").classList.toggle("active", tab === "results");
-
-    // If switching to results and we have results, show the overlay
-    if (tab === "results" && simState.results && simState.results.status === "completed") {
-        showResultsOverlay();
-    }
 }
 
 // ── Collect current parameters from the form ─────────────────────────────────
@@ -284,7 +271,7 @@ async function pollSimulationStatus() {
             if (result.status === "completed") {
                 statusEl.className = "sim-status completed";
                 statusEl.textContent = result.message || "Simulation completed.";
-                renderResultsSummary(result);
+                renderResultsInPanel(result);
                 switchSimTab("results");
             } else {
                 statusEl.className = "sim-status error";
@@ -296,9 +283,9 @@ async function pollSimulationStatus() {
     }
 }
 
-// ── Render results summary in side panel ─────────────────────────────────────
+// ── Render results inside the side panel ─────────────────────────────────────
 
-function renderResultsSummary(result) {
+function renderResultsInPanel(result) {
     const container = document.getElementById("sim-results-content");
 
     if (!result.well_data || Object.keys(result.well_data).length === 0) {
@@ -307,134 +294,58 @@ function renderResultsSummary(result) {
     }
 
     const wellNames = Object.keys(result.well_data);
-    const hasReservoir = result.reservoir_states && result.reservoir_states.steps;
+    const hasReservoirVars = result.reservoir_vars && result.reservoir_vars.length > 0;
 
     let html = `<p class="sim-result-msg">${result.message}</p>`;
     html += `<div class="sim-result-summary">`;
     html += `<p><strong>Wells:</strong> ${wellNames.join(", ")}</p>`;
     html += `<p><strong>Timesteps:</strong> ${result.num_steps}</p>`;
-    if (hasReservoir) {
-        html += `<p><strong>3D States:</strong> ${result.reservoir_states.steps.length} snapshots</p>`;
+    if (hasReservoirVars) {
+        html += `<p><strong>Reservoir variables:</strong> ${result.reservoir_vars.join(", ")}</p>`;
     }
     html += `</div>`;
-    html += `<button class="btn-primary btn-view-results" onclick="showResultsOverlay()">🔍 View Full Results</button>`;
+
+    // Well output section
+    html += `<div class="sim-result-section">`;
+    html += `<h3>🧪 Well Output</h3>`;
+    html += `<div class="sim-result-controls">`;
+    html += `<div class="sim-result-control-row">`;
+    html += `<label>Well:</label>`;
+    html += `<select id="result-well-select" class="sim-result-select">`;
+    for (const wname of wellNames) {
+        html += `<option value="${wname}">${wname}</option>`;
+    }
+    html += `</select></div>`;
+    html += `<div class="sim-result-control-row">`;
+    html += `<label>Variable:</label>`;
+    html += `<select id="result-var-select" class="sim-result-select"></select>`;
+    html += `</div></div>`;
+    html += `<div class="sim-result-chart-wrap"><canvas id="result-chart-canvas"></canvas></div>`;
+    html += `</div>`;
 
     container.innerHTML = html;
+
+    // Set up variable dropdown for first well
+    populateVarSelect(result, wellNames[0]);
+
+    // Event listeners
+    document.getElementById("result-well-select").addEventListener("change", (e) => {
+        populateVarSelect(result, e.target.value);
+        drawResultChart(result);
+    });
+    document.getElementById("result-var-select").addEventListener("change", () => {
+        drawResultChart(result);
+    });
+
+    // Draw initial chart
+    drawResultChart(result);
 }
 
-// ── Results overlay ──────────────────────────────────────────────────────────
-
-function initResultsOverlay() {
-    // Close overlay
-    document.getElementById("btn-close-overlay").addEventListener("click", () => {
-        hideResultsOverlay();
-    });
-
-    // Tab switching in overlay
-    document.getElementById("overlay-tab-setup").addEventListener("click", () => {
-        hideResultsOverlay();
-        switchSimTab("setup");
-    });
-
-    document.getElementById("overlay-tab-results").addEventListener("click", () => {
-        // Already on results — no-op
-    });
-
-    // Step controls
-    document.getElementById("step-first").addEventListener("click", () => setStep(0));
-    document.getElementById("step-prev").addEventListener("click", () => setStep(simState.currentStep - 1));
-    document.getElementById("step-next").addEventListener("click", () => setStep(simState.currentStep + 1));
-    document.getElementById("step-last").addEventListener("click", () => setStep(simState.totalSteps - 1));
-    document.getElementById("step-play").addEventListener("click", togglePlay);
-    document.getElementById("step-slider").addEventListener("input", (e) => {
-        setStep(parseInt(e.target.value));
-    });
-
-    // Variable selectors
-    document.getElementById("reservoir-var-select").addEventListener("change", () => {
-        updateReservoir3D();
-    });
-    document.getElementById("show-delta").addEventListener("change", () => {
-        updateReservoir3D();
-    });
-    document.getElementById("well-select").addEventListener("change", () => {
-        populateWellVarSelect();
-        updateWellChart();
-    });
-    document.getElementById("well-var-select").addEventListener("change", () => {
-        updateWellChart();
-    });
-}
-
-function showResultsOverlay() {
-    const result = simState.results;
-    if (!result || result.status !== "completed") return;
-
-    const overlay = document.getElementById("results-overlay");
-    overlay.style.display = "flex";
-
-    // Populate dropdowns
-    populateReservoirVarSelect(result);
-    populateWellSelect(result);
-
-    // Set up step controls
-    const rs = result.reservoir_states;
-    if (rs && rs.steps) {
-        simState.totalSteps = rs.steps.length;
-    } else {
-        simState.totalSteps = 1;
-    }
-    simState.currentStep = 0;
-
-    const slider = document.getElementById("step-slider");
-    slider.max = Math.max(0, simState.totalSteps - 1);
-    slider.value = 0;
-    updateStepLabel();
-
-    // Render initial views
-    updateReservoir3D();
-    updateWellChart();
-}
-
-function hideResultsOverlay() {
-    document.getElementById("results-overlay").style.display = "none";
-    stopPlay();
-}
-
-function populateReservoirVarSelect(result) {
-    const select = document.getElementById("reservoir-var-select");
+function populateVarSelect(result, wellName) {
+    const select = document.getElementById("result-var-select");
     select.innerHTML = "";
-    const rs = result.reservoir_states;
-    if (rs && rs.variables) {
-        for (const v of rs.variables) {
-            const opt = document.createElement("option");
-            opt.value = v;
-            opt.textContent = v;
-            select.appendChild(opt);
-        }
-    }
-}
-
-function populateWellSelect(result) {
-    const select = document.getElementById("well-select");
-    select.innerHTML = "";
-    if (result.well_data) {
-        for (const wname of Object.keys(result.well_data)) {
-            const opt = document.createElement("option");
-            opt.value = wname;
-            opt.textContent = wname;
-            select.appendChild(opt);
-        }
-    }
-    populateWellVarSelect();
-}
-
-function populateWellVarSelect() {
-    const wellName = document.getElementById("well-select").value;
-    const select = document.getElementById("well-var-select");
-    select.innerHTML = "";
-    if (simState.results && simState.results.well_data && simState.results.well_data[wellName]) {
-        for (const vname of Object.keys(simState.results.well_data[wellName])) {
+    if (result.well_data && result.well_data[wellName]) {
+        for (const vname of Object.keys(result.well_data[wellName])) {
             const opt = document.createElement("option");
             opt.value = vname;
             opt.textContent = vname;
@@ -443,150 +354,11 @@ function populateWellVarSelect() {
     }
 }
 
-// ── Step controls ────────────────────────────────────────────────────────────
+// ── Well Output Chart (in side panel) ────────────────────────────────────────
 
-function setStep(step) {
-    step = Math.max(0, Math.min(step, simState.totalSteps - 1));
-    simState.currentStep = step;
-    document.getElementById("step-slider").value = step;
-    updateStepLabel();
-    updateReservoir3D();
-    updateWellChart();
-}
-
-function updateStepLabel() {
-    document.getElementById("step-label").textContent =
-        `Step ${simState.currentStep + 1} / ${simState.totalSteps}`;
-}
-
-function togglePlay() {
-    if (simState.isPlaying) {
-        stopPlay();
-    } else {
-        startPlay();
-    }
-}
-
-function startPlay() {
-    simState.isPlaying = true;
-    document.getElementById("step-play").textContent = "⏸";
-    simState.playTimer = setInterval(() => {
-        if (simState.currentStep < simState.totalSteps - 1) {
-            setStep(simState.currentStep + 1);
-        } else {
-            stopPlay();
-        }
-    }, 800);
-}
-
-function stopPlay() {
-    simState.isPlaying = false;
-    document.getElementById("step-play").textContent = "▶";
-    if (simState.playTimer) {
-        clearInterval(simState.playTimer);
-        simState.playTimer = null;
-    }
-}
-
-// ── 3D Reservoir Visualization (Plotly.js) ───────────────────────────────────
-
-function updateReservoir3D() {
-    const result = simState.results;
-    if (!result) return;
-
-    const rs = result.reservoir_states;
-    const plotDiv = document.getElementById("reservoir-3d-plot");
-
-    if (!rs || !rs.steps || !rs.grid) {
-        plotDiv.innerHTML = `<p class="no-selection">No 3D reservoir data available.</p>`;
-        return;
-    }
-
-    if (typeof Plotly === "undefined") {
-        plotDiv.innerHTML = `<p class="no-selection">Plotly.js not loaded. 3D visualization unavailable.</p>`;
-        return;
-    }
-
-    const variable = document.getElementById("reservoir-var-select").value;
-    const showDelta = document.getElementById("show-delta").checked;
-    const step = simState.currentStep;
-
-    const grid = rs.grid;
-    let values = rs.steps[step][variable];
-
-    if (!values) {
-        plotDiv.innerHTML = `<p class="no-selection">Variable "${variable}" not found at step ${step + 1}.</p>`;
-        return;
-    }
-
-    // If showing delta, subtract initial state
-    if (showDelta && step > 0) {
-        const initial = rs.steps[0][variable];
-        if (initial) {
-            values = values.map((v, i) => v - initial[i]);
-        }
-    }
-
-    const units = { "Pressure": "bar", "Temperature": "°C" };
-    const unit = units[variable] || "";
-    const title = showDelta && step > 0
-        ? `Δ${variable} at step ${step + 1} [${unit}]`
-        : `${variable} at step ${step + 1} [${unit}]`;
-
-    const trace = {
-        type: "isosurface",
-        x: grid.x,
-        y: grid.y,
-        z: grid.z,
-        value: values,
-        colorscale: variable === "Temperature" ? "RdBu" : "Viridis",
-        reversescale: variable === "Temperature",
-        isomin: Math.min(...values),
-        isomax: Math.max(...values),
-        surface: { count: 3, fill: 0.8 },
-        caps: {
-            x: { show: true, fill: 0.6 },
-            y: { show: true, fill: 0.6 },
-            z: { show: true, fill: 0.6 },
-        },
-        colorbar: {
-            title: `${variable} [${unit}]`,
-            titleside: "right",
-            thickness: 20,
-            len: 0.7,
-        },
-    };
-
-    const layout = {
-        title: { text: title, font: { size: 14 } },
-        margin: { l: 0, r: 0, t: 40, b: 0 },
-        scene: {
-            xaxis: { title: "x" },
-            yaxis: { title: "y" },
-            zaxis: { title: "z" },
-            aspectmode: "data",
-        },
-        paper_bgcolor: "rgba(0,0,0,0)",
-        plot_bgcolor: "rgba(0,0,0,0)",
-    };
-
-    const config = {
-        responsive: true,
-        displayModeBar: true,
-        modeBarButtonsToRemove: ["toImage"],
-    };
-
-    Plotly.react(plotDiv, [trace], layout, config);
-}
-
-// ── Well Output Chart ────────────────────────────────────────────────────────
-
-function updateWellChart() {
-    const result = simState.results;
-    if (!result || !result.well_data) return;
-
-    const wellName = document.getElementById("well-select").value;
-    const varName = document.getElementById("well-var-select").value;
+function drawResultChart(result) {
+    const wellName = document.getElementById("result-well-select").value;
+    const varName = document.getElementById("result-var-select").value;
 
     if (!wellName || !varName) return;
     const wellVars = result.well_data[wellName];
@@ -594,18 +366,15 @@ function updateWellChart() {
 
     const values = wellVars[varName];
     const timestamps = result.timestamps;
-    drawWellOutputChart("well-chart-canvas", timestamps, values, varName);
-}
 
-function drawWellOutputChart(canvasId, timestamps, values, label) {
-    const canvas = document.getElementById(canvasId);
+    const canvas = document.getElementById("result-chart-canvas");
     if (!canvas) return;
 
     const dpr = window.devicePixelRatio || 1;
     const container = canvas.parentElement;
     const rect = container.getBoundingClientRect();
-    const w = rect.width - 20;
-    const h = Math.max(300, rect.height - 20);
+    const w = Math.max(200, rect.width - 10);
+    const h = 260;
 
     canvas.style.width = w + "px";
     canvas.style.height = h + "px";
@@ -615,21 +384,10 @@ function drawWellOutputChart(canvasId, timestamps, values, label) {
     const ctx = canvas.getContext("2d");
     ctx.scale(dpr, dpr);
 
-    const pad = { top: 20, right: 30, bottom: 45, left: 65 };
-    const plotW = w - pad.left - pad.right;
-    const plotH = h - pad.top - pad.bottom;
-
-    // Convert timestamps (days) to appropriate unit
+    // Convert timestamps (days) to years
     const DAYS_PER_YEAR = 365.25;
-    const maxDays = Math.max(...timestamps);
-    let timeVals, timeUnit;
-    if (maxDays > 365) {
-        timeVals = timestamps.map(t => t / DAYS_PER_YEAR);
-        timeUnit = "years";
-    } else {
-        timeVals = [...timestamps];
-        timeUnit = "days";
-    }
+    const timeVals = timestamps.map(t => t / DAYS_PER_YEAR);
+    const timeUnit = "years";
 
     const tMin = Math.min(...timeVals);
     const tMax = Math.max(...timeVals);
@@ -640,6 +398,10 @@ function drawWellOutputChart(canvasId, timestamps, values, label) {
     const vPad = (vMax - vMin) * 0.05;
     vMin -= vPad;
     vMax += vPad;
+
+    const pad = { top: 15, right: 15, bottom: 42, left: 70 };
+    const plotW = w - pad.left - pad.right;
+    const plotH = h - pad.top - pad.bottom;
 
     // Background
     ctx.fillStyle = "#fafbfc";
@@ -669,58 +431,43 @@ function drawWellOutputChart(canvasId, timestamps, values, label) {
     }
 
     // Data line
+    const tRange = (tMax - tMin) || 1;
+    const vRange = (vMax - vMin) || 1;
     ctx.strokeStyle = "#2563eb";
     ctx.lineWidth = 2;
     ctx.beginPath();
     for (let i = 0; i < values.length; i++) {
-        const x = pad.left + ((timeVals[i] - tMin) / (tMax - tMin || 1)) * plotW;
-        const y = pad.top + (1 - (values[i] - vMin) / (vMax - vMin || 1)) * plotH;
+        const x = pad.left + ((timeVals[i] - tMin) / tRange) * plotW;
+        const y = pad.top + (1 - (values[i] - vMin) / vRange) * plotH;
         if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
     }
     ctx.stroke();
 
-    // Current step marker (red dot)
-    const rs = simState.results && simState.results.reservoir_states;
-    if (rs && rs.step_indices) {
-        const stepIdx = rs.step_indices[simState.currentStep];
-        if (stepIdx !== undefined && stepIdx > 0 && stepIdx <= values.length) {
-            const idx = stepIdx - 1; // Convert 1-based to 0-based
-            const mx = pad.left + ((timeVals[idx] - tMin) / (tMax - tMin || 1)) * plotW;
-            const my = pad.top + (1 - (values[idx] - vMin) / (vMax - vMin || 1)) * plotH;
-            ctx.fillStyle = "#dc2626";
-            ctx.beginPath();
-            ctx.arc(mx, my, 5, 0, 2 * Math.PI);
-            ctx.fill();
-        }
-    }
-
-    // Y-axis label
+    // Y-axis label (use variable name which includes unit from backend)
     ctx.save();
     ctx.fillStyle = "#475569";
-    ctx.font = "12px -apple-system, BlinkMacSystemFont, sans-serif";
+    ctx.font = "11px -apple-system, BlinkMacSystemFont, sans-serif";
     ctx.textAlign = "center";
-    ctx.translate(15, pad.top + plotH / 2);
+    ctx.translate(13, pad.top + plotH / 2);
     ctx.rotate(-Math.PI / 2);
-    const varUnits = { "temperature": "°C", "mass_rate": "kg/s", "pressure": "bar" };
-    const unit = varUnits[label.toLowerCase()] || "";
-    ctx.fillText(`${label} [${unit}]`, 0, 0);
+    ctx.fillText(varName, 0, 0);
     ctx.restore();
 
     // X-axis label
     ctx.fillStyle = "#475569";
-    ctx.font = "12px -apple-system, BlinkMacSystemFont, sans-serif";
+    ctx.font = "11px -apple-system, BlinkMacSystemFont, sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText(`Time (${timeUnit})`, pad.left + plotW / 2, h - 5);
+    ctx.fillText(`Time [${timeUnit}]`, pad.left + plotW / 2, h - 3);
 
     // Y-axis ticks
     ctx.fillStyle = "#64748b";
-    ctx.font = "11px -apple-system, BlinkMacSystemFont, sans-serif";
+    ctx.font = "10px -apple-system, BlinkMacSystemFont, sans-serif";
     ctx.textAlign = "right";
     for (let i = 0; i <= 5; i++) {
         const val = vMax - (i / 5) * (vMax - vMin);
         const y = pad.top + (plotH * i / 5);
-        ctx.fillText(val.toFixed(1), pad.left - 8, y + 4);
+        ctx.fillText(val.toFixed(1), pad.left - 6, y + 4);
     }
 
     // X-axis ticks
@@ -728,7 +475,7 @@ function drawWellOutputChart(canvasId, timestamps, values, label) {
     for (let i = 0; i <= 5; i++) {
         const val = tMin + (i / 5) * (tMax - tMin);
         const x = pad.left + (plotW * i / 5);
-        ctx.fillText(val.toFixed(1), x, pad.top + plotH + 18);
+        ctx.fillText(val.toFixed(1), x, pad.top + plotH + 16);
     }
 }
 

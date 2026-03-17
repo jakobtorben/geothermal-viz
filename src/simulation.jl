@@ -33,6 +33,47 @@ function _sim_log_push!(msg::AbstractString)
     end
 end
 
+"""
+    _capture_stdout(f) -> String
+
+Run `f()` while capturing everything written to stdout and stderr.
+Returns the captured output as a String.
+"""
+function _capture_stdout(f)
+    out_rd, out_wr = redirect_stdout()
+    err_rd, err_wr = redirect_stderr()
+    output = Channel{String}(Inf)
+    # Reader tasks: forward lines to both real stdout and log
+    reader_out = @async begin
+        for line in eachline(out_rd)
+            put!(output, line)
+        end
+    end
+    reader_err = @async begin
+        for line in eachline(err_rd)
+            put!(output, line)
+        end
+    end
+    # Consumer: push captured lines to the simulation log
+    consumer = @async begin
+        for line in output
+            _sim_log_push!(line)
+        end
+    end
+    try
+        return f()
+    finally
+        redirect_stdout()
+        redirect_stderr()
+        close(out_wr)
+        close(err_wr)
+        wait(reader_out)
+        wait(reader_err)
+        close(output)
+        wait(consumer)
+    end
+end
+
 """Get a snapshot of the simulation status (thread-safe)."""
 function get_simulation_status()
     lock(_sim_lock) do
@@ -418,37 +459,50 @@ function _run_fimbul_live(case_type, params)
         _sim_log_push!("Case created. Starting reservoir simulation...")
         _sim_log_push!("This may take several minutes depending on model size.")
 
-        # Simulate the entire specified period
-        results = Fimbul.simulate_reservoir(case)
+        # Simulate while capturing stdout/stderr (Fimbul progress bars etc.)
+        results = _capture_stdout() do
+            Fimbul.simulate_reservoir(case)
+        end
 
         _sim_log_push!("Simulation completed. Extracting results...")
 
-        # Extract well data from results
+        # Extract well data from results with unit conversion
         well_data = Dict{String,Any}()
         for (wname, wdata) in pairs(results.wells)
             wdict = Dict{String,Any}()
             for (k, v) in pairs(wdata)
-                if v isa AbstractVector
-                    if eltype(v) <: Number
-                        wdict[string(k)] = collect(Float64, v)
-                    end
+                if v isa AbstractVector && eltype(v) <: Number
+                    ckey, cvals = _convert_well_variable(string(k), collect(Float64, v))
+                    wdict[ckey] = cvals
                 end
             end
             well_data[string(wname)] = wdict
         end
 
         # Convert timestamps from seconds to days
-        timestamps = collect(Float64, results.time)
+        timestamps = collect(Float64, Fimbul.convert_from_si.(results.time, :day))
+
+        # Extract reservoir state variable names and count
+        reservoir_vars = String[]
+        if !isempty(results.states)
+            for (k, v) in pairs(results.states[1])
+                if v isa AbstractVector{<:Real}
+                    push!(reservoir_vars, string(k))
+                end
+            end
+        end
 
         _sim_log_push!("Results extracted: $(length(well_data)) well(s), $(length(results.states)) timesteps.")
+        _sim_log_push!("Reservoir variables: $(join(reservoir_vars, ", "))")
         _sim_log_push!("Simulation finished successfully.")
 
         return Dict{String,Any}(
-            "status"     => "completed",
-            "message"    => "Simulation completed successfully.",
-            "well_data"  => well_data,
-            "timestamps" => timestamps,
-            "num_steps"  => length(results.states),
+            "status"         => "completed",
+            "message"        => "Simulation completed successfully.",
+            "well_data"      => well_data,
+            "timestamps"     => timestamps,
+            "num_steps"      => length(results.states),
+            "reservoir_vars" => reservoir_vars,
         )
     catch e
         _sim_log_push!("ERROR: $(sprint(showerror, e))")
@@ -456,6 +510,26 @@ function _run_fimbul_live(case_type, params)
             "status"  => "error",
             "message" => "Simulation failed: $(sprint(showerror, e))",
         )
+    end
+end
+
+# ── Unit conversion helpers (following FimbulApp.jl pattern) ──────────────────
+
+const _K_to_C = 273.15
+const _m3s_to_Ls = 1000.0
+const _Pa_to_bar = 1e-5
+
+"""Convert a well output variable from SI units to user-friendly units."""
+function _convert_well_variable(name::String, values::Vector{Float64})
+    ln = lowercase(name)
+    if occursin("temperature", ln)
+        return name * " [°C]", values .- _K_to_C
+    elseif occursin("rate", ln) && !occursin("mass", ln)
+        return name * " [L/s]", values .* _m3s_to_Ls
+    elseif occursin("pressure", ln) || ln == "bhp"
+        return name * " [bar]", values .* _Pa_to_bar
+    else
+        return name, values
     end
 end
 
@@ -500,104 +574,17 @@ function _run_mock_simulation(case_type, params)
         )
     end
 
-    # Generate mock reservoir states
-    _sim_log_push!("Generating reservoir state data...")
-    reservoir_states = _generate_mock_reservoir_states(case_type, params, timestamps)
+    # Generate mock reservoir vars (names only, no full grid data for mock)
+    reservoir_vars = ["Pressure", "Temperature"]
 
     _sim_log_push!("Mock simulation completed.")
 
     return Dict{String,Any}(
-        "status"           => "completed",
-        "message"          => "Mock simulation completed (for testing).",
-        "well_data"        => well_data,
-        "timestamps"       => timestamps,
-        "num_steps"        => n_steps,
-        "reservoir_states" => reservoir_states,
-    )
-end
-
-"""
-    _generate_mock_reservoir_states(case_type, params, timestamps) -> Dict
-
-Generate mock 3D reservoir state data for visualization.
-Returns grid coordinates and field values (Pressure, Temperature) at selected timesteps.
-"""
-function _generate_mock_reservoir_states(case_type, params, timestamps)
-    depth = get(params, "well_depth", 200.0)
-    T_surface = get(params, "surface_temperature", 7.0)
-    gradient = get(params, "geothermal_gradient", 0.025)
-
-    # Grid dimensions (keep small for performance)
-    nx, ny, nz = 12, 12, 8
-    radius = case_type == "BTES" ? get(params, "well_spacing", 5.0) * 4 : 50.0
-
-    x_vals = collect(range(-radius, radius; length=nx))
-    y_vals = collect(range(-radius, radius; length=ny))
-    z_vals = collect(range(0, -depth; length=nz))
-
-    # Flatten coordinates
-    coords_x = Float64[]
-    coords_y = Float64[]
-    coords_z = Float64[]
-    for zi in z_vals, yi in y_vals, xi in x_vals
-        push!(coords_x, xi)
-        push!(coords_y, yi)
-        push!(coords_z, zi)
-    end
-
-    n_cells = length(coords_x)
-    n_total = length(timestamps)
-
-    # Select representative timesteps (max 12 for performance)
-    n_vis = min(12, n_total)
-    step_indices = round.(Int, range(1, n_total; length=n_vis))
-
-    steps = Vector{Dict{String,Any}}()
-    for si in step_indices
-        t = timestamps[si]
-
-        # Mock pressure: hydrostatic + time-dependent perturbation
-        P_base = 1.0  # 1 atm at surface in bar
-        pressure = Float64[]
-        temperature = Float64[]
-
-        for zi in z_vals, yi in y_vals, xi in x_vals
-            r = sqrt(xi^2 + yi^2)
-            z_depth = abs(zi)
-
-            # Pressure: hydrostatic + radial perturbation near well
-            p = P_base + 0.1 * z_depth  # ~10 bar per 100m
-            if r < radius * 0.5
-                p += 5.0 * exp(-r / (radius * 0.2)) * (1 - exp(-t / (DAYS_PER_YEAR * 2)))
-            end
-            push!(pressure, p)
-
-            # Temperature: geothermal gradient + cooling near well
-            temp = T_surface + gradient * z_depth
-            if r < radius * 0.5
-                cooling = MOCK_TEMP_DECAY_FACTOR * log(1 + t / DAYS_PER_YEAR) * exp(-r / (radius * 0.3))
-                temp -= cooling
-            end
-            push!(temperature, temp)
-        end
-
-        push!(steps, Dict{String,Any}(
-            "Pressure"    => pressure,
-            "Temperature" => temperature,
-        ))
-    end
-
-    return Dict{String,Any}(
-        "grid" => Dict{String,Any}(
-            "x"  => coords_x,
-            "y"  => coords_y,
-            "z"  => coords_z,
-            "nx" => nx,
-            "ny" => ny,
-            "nz" => nz,
-        ),
-        "variables"    => ["Pressure", "Temperature"],
-        "steps"        => steps,
-        "step_indices" => step_indices,
+        "status"         => "completed",
+        "message"        => "Mock simulation completed (for testing).",
+        "well_data"      => well_data,
+        "timestamps"     => timestamps,
+        "num_steps"      => n_steps,
+        "reservoir_vars" => reservoir_vars,
     )
 end

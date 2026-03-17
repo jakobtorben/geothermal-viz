@@ -6,7 +6,6 @@
     <title>GeothermalViz – Oslo Borehole Map</title>
     <link rel="stylesheet" href="vendor/maplibre-gl.css">
     <link rel="stylesheet" href="css/style.css">
-    <script src="https://cdn.plot.ly/plotly-gl3d-2.35.2.min.js" charset="utf-8"></script>
 </head>
 <body>
     <div id="map"></div>
@@ -106,64 +105,6 @@
         <div id="sim-results" class="sim-tab-content">
             <div id="sim-results-content">
                 <p class="no-selection">Run a simulation to view results here.</p>
-            </div>
-        </div>
-    </div>
-
-    <!-- Full-screen results overlay -->
-    <div id="results-overlay" class="results-overlay" style="display:none;">
-        <div class="results-overlay-header">
-            <div class="results-overlay-tabs">
-                <button class="results-overlay-tab" data-tab="setup" id="overlay-tab-setup">⚙️ Setup</button>
-                <button class="results-overlay-tab active" data-tab="results" id="overlay-tab-results">📊 Results</button>
-            </div>
-            <button id="btn-close-overlay" class="btn-icon results-close" title="Close results">✕</button>
-        </div>
-        <div class="results-overlay-body">
-            <!-- Left column: Reservoir States -->
-            <div class="results-col results-col-left">
-                <div class="results-section-header">
-                    <h3>🗺️ Reservoir States</h3>
-                </div>
-                <div class="results-controls">
-                    <div class="results-control-row">
-                        <label>Variable:</label>
-                        <select id="reservoir-var-select" class="results-select"></select>
-                    </div>
-                    <div class="results-step-controls">
-                        <button class="step-btn" id="step-first" title="First step">⏮</button>
-                        <button class="step-btn" id="step-prev" title="Previous step">◀</button>
-                        <button class="step-btn" id="step-play" title="Play">▶</button>
-                        <button class="step-btn" id="step-next" title="Next step">▶</button>
-                        <button class="step-btn" id="step-last" title="Last step">⏭</button>
-                        <input type="range" id="step-slider" class="step-slider" min="0" max="0" value="0">
-                        <span id="step-label" class="step-label">Step 1 / 1</span>
-                    </div>
-                    <label class="results-checkbox">
-                        <input type="checkbox" id="show-delta">
-                        Show difference from initial state
-                    </label>
-                </div>
-                <div id="reservoir-3d-plot" class="reservoir-3d-plot"></div>
-            </div>
-            <!-- Right column: Well Output -->
-            <div class="results-col results-col-right">
-                <div class="results-section-header">
-                    <h3>🧪 Well Output</h3>
-                </div>
-                <div class="results-controls">
-                    <div class="results-control-row">
-                        <label>Well:</label>
-                        <select id="well-select" class="results-select"></select>
-                    </div>
-                    <div class="results-control-row">
-                        <label>Variable:</label>
-                        <select id="well-var-select" class="results-select"></select>
-                    </div>
-                </div>
-                <div id="well-output-chart" class="well-output-chart">
-                    <canvas id="well-chart-canvas"></canvas>
-                </div>
             </div>
         </div>
     </div>

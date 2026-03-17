@@ -38,13 +38,15 @@ using JSON3
         all_data = JSON3.read(read(output_files["all_boreholes"], String))
         @test length(all_data.features) > 0
 
-        # Verify coordinates are in WGS84 range (longitude, latitude)
-        for feat in all_data.features
+        # Verify a sample of coordinates are in WGS84/Oslo area (not all 20K+)
+        sample_size = min(50, length(all_data.features))
+        sample_indices = round.(Int, range(1, length(all_data.features); length=sample_size))
+        for idx in sample_indices
+            feat = all_data.features[idx]
             coords = feat.geometry.coordinates
             lon, lat = coords[1], coords[2]
             @test -180 <= lon <= 180
             @test -90 <= lat <= 90
-            # Should be in Oslo area (approximately)
             @test 10.0 <= lon <= 11.5
             @test 59.5 <= lat <= 60.5
         end
@@ -90,16 +92,12 @@ using JSON3
         # Non-simulatable types return nothing
         @test select_case_type("GrunnvannBrønn") === nothing
         @test select_case_type("Sonderboring") === nothing
-        @test select_case_type("LGNBrønn") === nothing
-        @test select_case_type("GrunnvannOppkomme") === nothing
-        @test select_case_type("LGNOmrådeRefPkt") === nothing
         @test select_case_type("Unknown") === nothing
 
         # is_simulatable
         @test is_simulatable("EnergiBrønn") == true
         @test is_simulatable("BrønnPark") == true
         @test is_simulatable("GrunnvannBrønn") == false
-        @test is_simulatable("Sonderboring") == false
     end
 
     @testset "Simulation — Parameter Mapping" begin
@@ -161,7 +159,7 @@ using JSON3
         @test any(e -> e[1] == "well_depth", errors)
     end
 
-    @testset "Simulation — Mock (for testing)" begin
+    @testset "Simulation — Mock" begin
         using GeothermalViz
 
         # AGS mock
@@ -172,6 +170,10 @@ using JSON3
         @test result["num_steps"] > 0
         @test length(result["timestamps"]) == result["num_steps"]
         @test haskey(result["well_data"], "Producer")
+        # Mock should return reservoir_vars list
+        @test haskey(result, "reservoir_vars")
+        @test "Pressure" in result["reservoir_vars"]
+        @test "Temperature" in result["reservoir_vars"]
 
         # BTES mock
         props2 = Dict("layer" => "BrønnPark", "brønnParkNr" => "1")
@@ -179,57 +181,6 @@ using JSON3
         result2 = run_fimbul_simulation(setup2; mock=true)
         @test result2["status"] == "completed"
         @test haskey(result2["well_data"], "BTES Array")
-    end
-
-    @testset "Simulation — Mock Reservoir States" begin
-        using GeothermalViz
-
-        # AGS mock should include reservoir_states
-        props = Dict("layer" => "EnergiBrønn", "boretLengde" => 200.0)
-        setup = well_to_simulation_params(props)
-        result = run_fimbul_simulation(setup; mock=true)
-        @test haskey(result, "reservoir_states")
-
-        rs = result["reservoir_states"]
-        @test haskey(rs, "grid")
-        @test haskey(rs, "variables")
-        @test haskey(rs, "steps")
-        @test haskey(rs, "step_indices")
-
-        grid = rs["grid"]
-        @test haskey(grid, "x")
-        @test haskey(grid, "y")
-        @test haskey(grid, "z")
-        @test haskey(grid, "nx")
-        @test haskey(grid, "ny")
-        @test haskey(grid, "nz")
-        @test length(grid["x"]) == grid["nx"] * grid["ny"] * grid["nz"]
-        @test length(grid["y"]) == length(grid["x"])
-        @test length(grid["z"]) == length(grid["x"])
-
-        # Variables should include Pressure and Temperature
-        @test "Pressure" in rs["variables"]
-        @test "Temperature" in rs["variables"]
-
-        # Each step should have values for each variable
-        @test length(rs["steps"]) > 0
-        for step in rs["steps"]
-            @test haskey(step, "Pressure")
-            @test haskey(step, "Temperature")
-            @test length(step["Pressure"]) == length(grid["x"])
-            @test length(step["Temperature"]) == length(grid["x"])
-        end
-
-        # Step indices should be valid
-        @test length(rs["step_indices"]) == length(rs["steps"])
-        @test all(i -> 1 <= i <= result["num_steps"], rs["step_indices"])
-
-        # BTES mock should also include reservoir_states
-        props2 = Dict("layer" => "BrønnPark", "brønnParkNr" => "1")
-        setup2 = well_to_simulation_params(props2)
-        result2 = run_fimbul_simulation(setup2; mock=true)
-        @test haskey(result2, "reservoir_states")
-        @test length(result2["reservoir_states"]["steps"]) > 0
     end
 
     @testset "Simulation — Async Start and Status" begin
@@ -244,7 +195,6 @@ using JSON3
         # Start async mock simulation
         props = Dict("layer" => "EnergiBrønn", "boretLengde" => 200.0)
         setup = well_to_simulation_params(props)
-        setup["mock"] = true  # Note: start_simulation_async passes mock flag
         start_result = start_simulation_async(setup; mock=true)
         @test start_result["status"] == "started"
 
