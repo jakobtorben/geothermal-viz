@@ -201,8 +201,8 @@ async function runSimulation() {
         if (result.status === "completed") {
             statusEl.className = "sim-status completed";
             statusEl.textContent = result.message || "Simulation completed.";
-            renderResults(result);
             switchSimTab("results");
+            renderResults(result);
         } else {
             statusEl.className = "sim-status error";
             statusEl.textContent = result.message || "Simulation failed.";
