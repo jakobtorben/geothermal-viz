@@ -100,12 +100,9 @@ function start_server(; host::AbstractString="127.0.0.1", port::Int=8080,
     # Serve static files and handle all other routes
     function handle_request(req)
         # Try router first
-        try
-            resp = HTTP.handle(router, req)
-            if resp.status != 404
-                return resp
-            end
-        catch
+        resp = router(req)
+        if resp.status != 404
+            return resp
         end
 
         # Serve static files
