@@ -80,20 +80,36 @@ using JSON3
         rm(output_dir; recursive=true)
     end
 
-    @testset "Simulation Parameter Mapping" begin
+    @testset "Simulation — Case Type Selection" begin
         using GeothermalViz
 
-        # Case type selection
+        # Only EnergiBrønn and BrønnPark are simulatable
         @test select_case_type("EnergiBrønn") == SIM_AGS
         @test select_case_type("BrønnPark") == SIM_BTES
-        @test select_case_type("GrunnvannBrønn") == SIM_DOUBLET
-        @test select_case_type("Sonderboring") == SIM_AGS
-        @test select_case_type("Unknown") == SIM_AGS  # default fallback
+
+        # Non-simulatable types return nothing
+        @test select_case_type("GrunnvannBrønn") === nothing
+        @test select_case_type("Sonderboring") === nothing
+        @test select_case_type("LGNBrønn") === nothing
+        @test select_case_type("GrunnvannOppkomme") === nothing
+        @test select_case_type("LGNOmrådeRefPkt") === nothing
+        @test select_case_type("Unknown") === nothing
+
+        # is_simulatable
+        @test is_simulatable("EnergiBrønn") == true
+        @test is_simulatable("BrønnPark") == true
+        @test is_simulatable("GrunnvannBrønn") == false
+        @test is_simulatable("Sonderboring") == false
+    end
+
+    @testset "Simulation — Parameter Mapping" begin
+        using GeothermalViz
 
         # Energy well → AGS with metadata extraction
         props = Dict("layer" => "EnergiBrønn", "brønnNr" => "12345",
                       "boretLengde" => 250.0, "diameterBorehull" => 139.0)
         result = well_to_simulation_params(props)
+        @test result["simulatable"] == true
         @test result["case_type"] == "AGS"
         @test result["well_id"] == "Well #12345"
         @test result["parameters"]["well_depth"] == 250.0
@@ -110,17 +126,17 @@ using JSON3
         props2 = Dict("layer" => "BrønnPark", "brønnParkNr" => "42",
                        "antallEnergiBrønner" => 24)
         result2 = well_to_simulation_params(props2)
+        @test result2["simulatable"] == true
         @test result2["case_type"] == "BTES"
         @test result2["well_id"] == "Well Park #42"
         @test result2["parameters"]["num_wells_btes"] == 24
         @test result2["sources"]["num_wells_btes"] == "data"
 
-        # Groundwater Well → Doublet
-        props3 = Dict("layer" => "GrunnvannBrønn", "brønnNr" => "99",
-                       "boretLengde" => 180.0)
+        # Non-simulatable well → simulatable=false
+        props3 = Dict("layer" => "GrunnvannBrønn", "brønnNr" => "99")
         result3 = well_to_simulation_params(props3)
-        @test result3["case_type"] == "DOUBLET"
-        @test result3["parameters"]["well_depth"] == 180.0
+        @test result3["simulatable"] == false
+        @test result3["case_type"] === nothing
 
         # Missing metadata → all defaults
         props4 = Dict("layer" => "EnergiBrønn")
@@ -129,7 +145,7 @@ using JSON3
         @test result4["sources"]["well_depth"] == "default"
     end
 
-    @testset "Simulation Validation" begin
+    @testset "Simulation — Validation" begin
         using GeothermalViz
 
         # Valid parameters
@@ -145,13 +161,13 @@ using JSON3
         @test any(e -> e[1] == "well_depth", errors)
     end
 
-    @testset "Mock Simulation" begin
+    @testset "Simulation — Mock (for testing)" begin
         using GeothermalViz
 
         # AGS mock
         props = Dict("layer" => "EnergiBrønn", "boretLengde" => 200.0)
         setup = well_to_simulation_params(props)
-        result = run_fimbul_simulation(setup)
+        result = run_fimbul_simulation(setup; mock=true)
         @test result["status"] == "completed"
         @test result["num_steps"] > 0
         @test length(result["timestamps"]) == result["num_steps"]
@@ -160,16 +176,8 @@ using JSON3
         # BTES mock
         props2 = Dict("layer" => "BrønnPark", "brønnParkNr" => "1")
         setup2 = well_to_simulation_params(props2)
-        result2 = run_fimbul_simulation(setup2)
+        result2 = run_fimbul_simulation(setup2; mock=true)
         @test result2["status"] == "completed"
         @test haskey(result2["well_data"], "BTES Array")
-
-        # Doublet mock
-        props3 = Dict("layer" => "GrunnvannBrønn", "brønnNr" => "1")
-        setup3 = well_to_simulation_params(props3)
-        result3 = run_fimbul_simulation(setup3)
-        @test result3["status"] == "completed"
-        @test haskey(result3["well_data"], "Producer")
-        @test haskey(result3["well_data"], "Injector")
     end
 end

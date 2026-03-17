@@ -3,18 +3,13 @@
  *
  * Handles the right-side simulation panel for setting up and running
  * Fimbul.jl geothermal simulations from well metadata.
+ *
+ * All parameter definitions, defaults, and simulation logic live on the
+ * Julia backend. This module only handles UI rendering and API calls.
  */
 
-// ── Physical constants ───────────────────────────────────────────────────────
-const WATER_VOLUMETRIC_HEAT_CAPACITY = 4.18e6;  // ρ·cp of water [J/(m³·K)]
-const ASSUMED_DELTA_T = 5.0;                     // assumed ΔT for flow rate estimate [K]
-const SECONDS_PER_HOUR = 3600.0;
-const DAYS_PER_YEAR = 365.25;
-
-// Mock simulation shape parameters
-const MOCK_TEMP_DECAY_FACTOR = 0.3;   // logarithmic production temperature decline
-const MOCK_SEASONAL_AMPLITUDE = 0.5;  // seasonal oscillation amplitude [K]
-const MOCK_BTES_WARMUP_FRACTION = 4;  // fraction of total steps for BTES warm-up
+// ── Well types that support simulation ───────────────────────────────────────
+const SIMULATABLE_LAYERS = new Set(["EnergiBrønn", "BrønnPark"]);
 
 // ── Simulation State ─────────────────────────────────────────────────────────
 const simState = {
@@ -23,118 +18,23 @@ const simState = {
     isRunning: false,
 };
 
-// ── Parameter defaults (client-side fallback) ────────────────────────────────
-const OSLO_DEFAULTS = {
-    surface_temperature: 7.0,
-    geothermal_gradient: 0.025,
-    rock_thermal_conductivity: 3.0,
-    rock_heat_capacity: 850.0,
-    porosity: 0.01,
-    permeability: 0.1,
-};
-
-const CASE_TYPE_MAP = {
-    "EnergiBrønn":       "AGS",
-    "GrunnvannBrønn":    "DOUBLET",
-    "BrønnPark":         "BTES",
-    "Sonderboring":      "AGS",
-    "LGNBrønn":          "AGS",
-    "GrunnvannOppkomme": "DOUBLET",
-    "LGNOmrådeRefPkt":   "AGS",
-};
-
-const CASE_LABELS = {
-    AGS:     "Advanced Geothermal System (AGS)",
-    BTES:    "Borehole Thermal Energy Storage (BTES)",
-    DOUBLET: "Geothermal Doublet",
-};
-
-const CASE_DESCRIPTIONS = {
-    AGS:     "Closed-loop heat exchanger in a single deep borehole. Suitable for individual energy wells.",
-    BTES:    "Array of closely-spaced boreholes for seasonal heat storage. Suitable for well parks.",
-    DOUBLET: "Conventional doublet with an injection and production well in a layered reservoir.",
-};
-
-const PARAM_META = {
-    well_depth:                { label: "Well depth",              unit: "m",       min: 10,    max: 8000,  step: 10,    group: "Well Geometry" },
-    borehole_diameter:         { label: "Borehole diameter",       unit: "mm",      min: 50,    max: 500,   step: 1,     group: "Well Geometry" },
-    surface_temperature:       { label: "Surface temperature",     unit: "°C",      min: -10,   max: 40,    step: 0.5,   group: "Rock Properties" },
-    geothermal_gradient:       { label: "Geothermal gradient",     unit: "K/m",     min: 0.01,  max: 0.10,  step: 0.005, group: "Rock Properties" },
-    rock_thermal_conductivity: { label: "Thermal conductivity",    unit: "W/(m·K)", min: 0.5,   max: 10.0,  step: 0.1,   group: "Rock Properties" },
-    rock_heat_capacity:        { label: "Rock heat capacity",      unit: "J/(kg·K)",min: 100,   max: 2000,  step: 50,    group: "Rock Properties" },
-    porosity:                  { label: "Porosity",                unit: "–",       min: 0.001, max: 0.5,   step: 0.01,  group: "Rock Properties" },
-    permeability:              { label: "Permeability",            unit: "mD",      min: 0.001, max: 5000,  step: 1,     group: "Rock Properties" },
-    temperature_inj:           { label: "Injection temperature",   unit: "°C",      min: 5,     max: 100,   step: 1,     group: "Operation" },
-    flow_rate:                 { label: "Flow rate",               unit: "m³/h",    min: 1,     max: 500,   step: 1,     group: "Operation" },
-    num_years:                 { label: "Simulation years",        unit: "yr",      min: 1,     max: 500,   step: 1,     group: "Simulation" },
-    num_wells_btes:            { label: "Number of wells",         unit: "–",       min: 4,     max: 200,   step: 1,     group: "BTES Layout" },
-    num_sectors:               { label: "Number of sectors",       unit: "–",       min: 1,     max: 20,    step: 1,     group: "BTES Layout" },
-    well_spacing:              { label: "Well spacing",            unit: "m",       min: 2,     max: 20,    step: 0.5,   group: "BTES Layout" },
-    temperature_charge:        { label: "Charge temperature",      unit: "°C",      min: 30,    max: 150,   step: 1,     group: "Operation" },
-    temperature_discharge:     { label: "Discharge temperature",   unit: "°C",      min: 5,     max: 50,    step: 1,     group: "Operation" },
-    rate_charge:               { label: "Charge rate",             unit: "L/s",     min: 0.1,   max: 50,    step: 0.1,   group: "Operation" },
-    spacing_top:               { label: "Surface well spacing",    unit: "m",       min: 10,    max: 500,   step: 10,    group: "Doublet Geometry" },
-    spacing_bottom:            { label: "Reservoir well spacing",  unit: "m",       min: 100,   max: 5000,  step: 50,    group: "Doublet Geometry" },
-    depth_deviation:           { label: "Deviation depth",         unit: "m",       min: 100,   max: 5000,  step: 50,    group: "Doublet Geometry" },
-};
-
-const CASE_PARAMS = {
-    AGS: [
-        "well_depth", "borehole_diameter",
-        "surface_temperature", "geothermal_gradient",
-        "rock_thermal_conductivity", "rock_heat_capacity",
-        "porosity", "permeability",
-        "temperature_inj", "flow_rate", "num_years",
-    ],
-    BTES: [
-        "well_depth", "num_wells_btes", "num_sectors", "well_spacing",
-        "surface_temperature", "geothermal_gradient",
-        "rock_thermal_conductivity", "rock_heat_capacity",
-        "temperature_charge", "temperature_discharge",
-        "rate_charge", "num_years",
-    ],
-    DOUBLET: [
-        "well_depth", "borehole_diameter",
-        "spacing_top", "spacing_bottom", "depth_deviation",
-        "surface_temperature", "geothermal_gradient",
-        "rock_thermal_conductivity", "rock_heat_capacity",
-        "porosity", "permeability",
-        "temperature_inj", "flow_rate", "num_years",
-    ],
-};
-
-const PARAM_DEFAULTS = {
-    well_depth: 200, borehole_diameter: 140,
-    surface_temperature: 7.0, geothermal_gradient: 0.025,
-    rock_thermal_conductivity: 3.0, rock_heat_capacity: 850,
-    porosity: 0.01, permeability: 0.1,
-    temperature_inj: 25, flow_rate: 25, num_years: 25,
-    num_wells_btes: 48, num_sectors: 6, well_spacing: 5.0,
-    temperature_charge: 90, temperature_discharge: 10, rate_charge: 0.5,
-    spacing_top: 100, spacing_bottom: 1000, depth_deviation: 800,
-};
-
 // ── Initialisation ───────────────────────────────────────────────────────────
 
 function initSimulationPanel() {
-    // Setup Simulation button
     document.getElementById("btn-setup-sim").addEventListener("click", () => {
         openSimPanel();
     });
 
-    // Close button
     document.getElementById("btn-close-sim").addEventListener("click", () => {
         closeSimPanel();
     });
 
-    // Tab switching
     document.querySelectorAll(".sim-tab").forEach(tab => {
         tab.addEventListener("click", () => {
             switchSimTab(tab.dataset.tab);
         });
     });
 
-    // Run button
     document.getElementById("btn-run-sim").addEventListener("click", () => {
         runSimulation();
     });
@@ -142,81 +42,53 @@ function initSimulationPanel() {
 
 // ── Panel open/close ─────────────────────────────────────────────────────────
 
-function openSimPanel() {
+async function openSimPanel() {
     const feature = window.GeothermalViz.state.selectedFeature;
     if (!feature) return;
 
-    const setup = buildSimulationSetup(feature.properties);
-    simState.currentSetup = setup;
+    const props = feature.properties;
+    const layerName = props.layer || "";
+    if (!SIMULATABLE_LAYERS.has(layerName)) return;
 
-    renderSimSetup(setup);
-    document.getElementById("sim-panel").classList.add("open");
-    switchSimTab("setup");
+    // Fetch simulation setup from Julia backend
+    try {
+        const resp = await fetch(`/api/simulation/setup`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(props),
+        });
+        const setup = await resp.json();
+
+        if (!setup.simulatable) {
+            return; // Should not happen given SIMULATABLE_LAYERS check, but be safe
+        }
+
+        simState.currentSetup = setup;
+        renderSimSetup(setup);
+        document.getElementById("sim-panel").classList.add("open");
+        switchSimTab("setup");
+    } catch (err) {
+        console.error("Failed to fetch simulation setup:", err);
+    }
 }
 
 function closeSimPanel() {
     document.getElementById("sim-panel").classList.remove("open");
 }
 
-// ── Show "Setup Simulation" button when well selected ────────────────────────
+// ── Show "Setup Simulation" button only for simulatable wells ────────────────
 
-function showSimButton() {
-    document.getElementById("sim-setup-action").style.display = "block";
+function showSimButton(feature) {
+    const layerName = (feature && feature.properties && feature.properties.layer) || "";
+    if (SIMULATABLE_LAYERS.has(layerName)) {
+        document.getElementById("sim-setup-action").style.display = "block";
+    } else {
+        document.getElementById("sim-setup-action").style.display = "none";
+    }
 }
 
 function hideSimButton() {
     document.getElementById("sim-setup-action").style.display = "none";
-}
-
-// ── Build setup from well properties (client-side) ───────────────────────────
-
-function buildSimulationSetup(props) {
-    const layerName = props.layer || "EnergiBrønn";
-    const caseType = CASE_TYPE_MAP[layerName] || "AGS";
-    const paramKeys = CASE_PARAMS[caseType];
-
-    const parameters = {};
-    const sources = {};
-
-    for (const key of paramKeys) {
-        const result = resolveParam(key, props);
-        parameters[key] = result.value;
-        sources[key] = result.source;
-    }
-
-    const wellId = props.brønnNr
-        ? `Well #${props.brønnNr}`
-        : (props.brønnParkNr ? `Well Park #${props.brønnParkNr}` : "Selected Well");
-
-    return {
-        case_type: caseType,
-        case_label: CASE_LABELS[caseType],
-        case_description: CASE_DESCRIPTIONS[caseType],
-        well_id: wellId,
-        parameters,
-        parameter_order: paramKeys,
-        sources,
-    };
-}
-
-function resolveParam(key, props) {
-    // Try to derive from well metadata
-    if (key === "well_depth" && props.boretLengde != null) {
-        return { value: parseFloat(props.boretLengde), source: "data" };
-    }
-    if (key === "borehole_diameter" && props.diameterBorehull != null) {
-        return { value: parseFloat(props.diameterBorehull), source: "data" };
-    }
-    if (key === "num_wells_btes" && props.antallEnergiBrønner != null) {
-        return { value: Math.max(4, Math.round(parseFloat(props.antallEnergiBrønner))), source: "data" };
-    }
-    if (key === "flow_rate" && props.brønnpVEffekt != null) {
-        const power = parseFloat(props.brønnpVEffekt);
-        const rate = (power / (WATER_VOLUMETRIC_HEAT_CAPACITY * ASSUMED_DELTA_T)) * SECONDS_PER_HOUR;
-        return { value: Math.max(1, Math.round(rate * 10) / 10), source: "data" };
-    }
-
-    return { value: PARAM_DEFAULTS[key] ?? 0, source: "default" };
 }
 
 // ── Render simulation setup form ─────────────────────────────────────────────
@@ -230,12 +102,12 @@ function renderSimSetup(setup) {
         <p class="sim-case-desc">${setup.case_description}</p>
     `;
 
-    // Parameters grouped
+    // Parameters grouped by metadata group
     const paramsEl = document.getElementById("sim-params");
     const groups = {};
 
     for (const key of setup.parameter_order) {
-        const meta = PARAM_META[key] || { label: key, unit: "", group: "Other" };
+        const meta = (setup.metadata && setup.metadata[key]) || { label: key, unit: "", group: "Other" };
         const group = meta.group || "Other";
         if (!groups[group]) groups[group] = [];
         groups[group].push({ key, meta });
@@ -305,7 +177,7 @@ async function runSimulation() {
     runBtn.textContent = "⏳ Running…";
     statusEl.style.display = "block";
     statusEl.className = "sim-status running";
-    statusEl.textContent = "Simulation is running…";
+    statusEl.textContent = "Simulation is running… this may take a few minutes.";
 
     const params = collectParams();
     const setup = {
@@ -314,19 +186,12 @@ async function runSimulation() {
     };
 
     try {
-        let result;
-        // Try Julia backend first
-        if (CONFIG.apiBase) {
-            const resp = await fetch(`${CONFIG.apiBase}/api/simulation/run`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(setup),
-            });
-            result = await resp.json();
-        } else {
-            // Client-side mock when no server
-            result = mockSimulation(setup);
-        }
+        const resp = await fetch(`/api/simulation/run`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(setup),
+        });
+        const result = await resp.json();
 
         simState.results = result;
         simState.isRunning = false;
@@ -349,54 +214,6 @@ async function runSimulation() {
         statusEl.className = "sim-status error";
         statusEl.textContent = `Error: ${err.message}`;
     }
-}
-
-// ── Client-side mock simulation (when no Julia backend) ──────────────────────
-
-function mockSimulation(setup) {
-    const params = setup.parameters;
-    const nYears = params.num_years || 25;
-    const nSteps = nYears * 12;
-    const dt = Array.from({ length: nSteps }, (_, i) => (i / nSteps) * nYears * DAYS_PER_YEAR);
-
-    const depth = params.well_depth || 200;
-    const Ts = params.surface_temperature || 7.0;
-    const grad = params.geothermal_gradient || 0.025;
-    const Tb = Ts + grad * depth;
-
-    const Tprod = dt.map(t => Tb - MOCK_TEMP_DECAY_FACTOR * Math.log(1 + t / DAYS_PER_YEAR) + MOCK_SEASONAL_AMPLITUDE * Math.sin(2 * Math.PI * t / DAYS_PER_YEAR));
-
-    const wellData = {};
-    if (setup.case_type === "DOUBLET") {
-        wellData["Producer"] = {
-            "Temperature [°C]": Tprod,
-            "Rate [m³/h]": Array(nSteps).fill(-(params.flow_rate || 25)),
-        };
-        wellData["Injector"] = {
-            "Temperature [°C]": Array(nSteps).fill(params.temperature_inj || 25),
-            "Rate [m³/h]": Array(nSteps).fill(params.flow_rate || 25),
-        };
-    } else if (setup.case_type === "AGS") {
-        wellData["Producer"] = {
-            "Temperature [°C]": Tprod,
-            "Rate [m³/h]": Array(nSteps).fill(params.flow_rate || 25),
-        };
-    } else {
-        const Tc = params.temperature_charge || 90;
-        const Tout = dt.map((t, i) => Ts + (Tc - Ts) * (1 - Math.exp(-i / (nSteps / MOCK_BTES_WARMUP_FRACTION))) * (0.5 + MOCK_SEASONAL_AMPLITUDE * Math.sin(2 * Math.PI * t / DAYS_PER_YEAR)));
-        wellData["BTES Array"] = {
-            "Temperature [°C]": Tout,
-            "Rate [L/s]": Array(nSteps).fill(params.rate_charge || 0.5),
-        };
-    }
-
-    return {
-        status: "completed",
-        message: "Client-side mock simulation completed. Connect to Julia server for real results.",
-        well_data: wellData,
-        timestamps: dt,
-        num_steps: nSteps,
-    };
 }
 
 // ── Render simulation results ────────────────────────────────────────────────
@@ -459,8 +276,9 @@ function drawSimChart(canvasId, timestamps, values, label) {
     const plotW = w - pad.left - pad.right;
     const plotH = h - pad.top - pad.bottom;
 
-    // Convert timestamps to years
-    const tYears = timestamps.map(t => t / 365.25);
+    // Convert timestamps (seconds) to years
+    const SECONDS_PER_YEAR = 365.25 * 24 * 3600;
+    const tYears = timestamps.map(t => t / SECONDS_PER_YEAR);
     const tMin = Math.min(...tYears);
     const tMax = Math.max(...tYears);
 
@@ -523,7 +341,6 @@ function drawSimChart(canvasId, timestamps, values, label) {
 
 // ── Hook into main app lifecycle ─────────────────────────────────────────────
 
-// Wait for DOM then initialise
 if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", initSimulationPanel);
 } else {
@@ -537,7 +354,7 @@ window.addEventListener("load", () => {
             name: "SimulationPanel",
             onEvent(event, data) {
                 if (event === "wellSelected") {
-                    showSimButton();
+                    showSimButton(data.feature);
                 }
             }
         });

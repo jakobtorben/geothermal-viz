@@ -9,62 +9,63 @@ and simulation orchestration.
 Supported Fimbul.jl case types:
 - AGS  (Advanced Geothermal System) — closed-loop single energy well
 - BTES (Borehole Thermal Energy Storage) — well park arrays
-- Doublet — paired injection/production wells
 
 Typical workflow:
 1. `well_to_simulation_params(properties)` — convert metadata to a parameter Dict
 2. Edit parameters in the frontend
-3. `run_fimbul_simulation(params)` — execute via Fimbul.jl (requires package)
+3. `run_fimbul_simulation(params)` — execute via Fimbul.jl
 """
+
+using Fimbul
 
 # ── Physical constants for parameter estimation ──────────────────────────────
 
 const WATER_VOLUMETRIC_HEAT_CAPACITY = 4.18e6  # ρ·cp of water [J/(m³·K)]
 const ASSUMED_DELTA_T = 5.0                     # assumed temperature difference [K]
 const SECONDS_PER_HOUR = 3600.0
-const DAYS_PER_YEAR = 365.25
-
-# Mock simulation shape parameters
-const MOCK_TEMP_DECAY_FACTOR = 0.3   # logarithmic production temperature decline
-const MOCK_SEASONAL_AMPLITUDE = 0.5  # seasonal oscillation amplitude [K]
-const MOCK_BTES_WARMUP_FRACTION = 4  # fraction of total steps for BTES warm-up
 
 # ── Case type enum ───────────────────────────────────────────────────────────
 
 """Supported Fimbul.jl simulation case types."""
-@enum SimCaseType SIM_AGS SIM_BTES SIM_DOUBLET
+@enum SimCaseType SIM_AGS SIM_BTES
 
 const CASE_TYPE_LABELS = Dict(
-    SIM_AGS     => "Advanced Geothermal System (AGS)",
-    SIM_BTES    => "Borehole Thermal Energy Storage (BTES)",
-    SIM_DOUBLET => "Geothermal Doublet",
+    SIM_AGS  => "Advanced Geothermal System (AGS)",
+    SIM_BTES => "Borehole Thermal Energy Storage (BTES)",
 )
 
 const CASE_TYPE_DESCRIPTIONS = Dict(
-    SIM_AGS     => "Closed-loop heat exchanger in a single deep borehole. Suitable for individual energy wells.",
-    SIM_BTES    => "Array of closely-spaced boreholes for seasonal heat storage. Suitable for well parks.",
-    SIM_DOUBLET => "Conventional doublet with an injection and a production well in a layered reservoir.",
+    SIM_AGS  => "Closed-loop heat exchanger in a single deep borehole. Suitable for individual energy wells.",
+    SIM_BTES => "Array of closely-spaced boreholes for seasonal heat storage. Suitable for well parks.",
 )
 
 # ── Layer → Case type mapping ────────────────────────────────────────────────
 
+"""Layer names for which simulation is supported."""
+const SIMULATABLE_LAYERS = Dict(
+    "EnergiBrønn" => SIM_AGS,
+    "BrønnPark"   => SIM_BTES,
+)
+
 """
-    select_case_type(layer_name) -> SimCaseType
+    select_case_type(layer_name) -> Union{SimCaseType, Nothing}
 
 Choose the most appropriate Fimbul simulation case type based on the
 borehole layer (well type) from the Norwegian database.
+
+Returns `nothing` for well types that are not simulatable.
 """
 function select_case_type(layer_name::AbstractString)
-    mapping = Dict(
-        "EnergiBrønn"       => SIM_AGS,
-        "GrunnvannBrønn"    => SIM_DOUBLET,
-        "BrønnPark"         => SIM_BTES,
-        "Sonderboring"      => SIM_AGS,
-        "LGNBrønn"          => SIM_AGS,
-        "GrunnvannOppkomme" => SIM_DOUBLET,
-        "LGNOmrådeRefPkt"   => SIM_AGS,
-    )
-    return get(mapping, layer_name, SIM_AGS)
+    return get(SIMULATABLE_LAYERS, layer_name, nothing)
+end
+
+"""
+    is_simulatable(layer_name) -> Bool
+
+Return `true` if the given layer name supports simulation.
+"""
+function is_simulatable(layer_name::AbstractString)
+    return haskey(SIMULATABLE_LAYERS, layer_name)
 end
 
 # ── Oslo-region defaults ─────────────────────────────────────────────────────
@@ -88,30 +89,26 @@ Keys: label, unit, min, max, step, tooltip, group.
 """
 const PARAM_METADATA = Dict{String,Dict{String,Any}}(
     # Well / geometry
-    "well_depth"                => Dict{String,Any}("label" => "Well depth",                "unit" => "m",       "min" => 10,    "max" => 8000,  "step" => 10,    "tooltip" => "Total drilled depth of the well",                           "group" => "well"),
-    "borehole_diameter"         => Dict{String,Any}("label" => "Borehole diameter",         "unit" => "mm",      "min" => 50,    "max" => 500,   "step" => 1,     "tooltip" => "Diameter of the borehole",                                   "group" => "well"),
+    "well_depth"                => Dict{String,Any}("label" => "Well depth",                "unit" => "m",       "min" => 10,    "max" => 8000,  "step" => 10,    "tooltip" => "Total drilled depth of the well",                           "group" => "Well Geometry"),
+    "borehole_diameter"         => Dict{String,Any}("label" => "Borehole diameter",         "unit" => "mm",      "min" => 50,    "max" => 500,   "step" => 1,     "tooltip" => "Diameter of the borehole",                                   "group" => "Well Geometry"),
     # Rock properties
-    "surface_temperature"       => Dict{String,Any}("label" => "Surface temperature",       "unit" => "°C",      "min" => -10,   "max" => 40,    "step" => 0.5,   "tooltip" => "Mean annual temperature at the surface",                     "group" => "rock"),
-    "geothermal_gradient"       => Dict{String,Any}("label" => "Geothermal gradient",       "unit" => "K/m",     "min" => 0.01,  "max" => 0.10,  "step" => 0.005, "tooltip" => "Rate of temperature increase with depth",                    "group" => "rock"),
-    "rock_thermal_conductivity" => Dict{String,Any}("label" => "Thermal conductivity",      "unit" => "W/(m·K)", "min" => 0.5,   "max" => 10.0,  "step" => 0.1,   "tooltip" => "Thermal conductivity of the surrounding rock",               "group" => "rock"),
-    "rock_heat_capacity"        => Dict{String,Any}("label" => "Rock heat capacity",        "unit" => "J/(kg·K)","min" => 100,   "max" => 2000,  "step" => 50,    "tooltip" => "Specific heat capacity of the rock matrix",                  "group" => "rock"),
-    "porosity"                  => Dict{String,Any}("label" => "Porosity",                  "unit" => "–",       "min" => 0.001, "max" => 0.5,   "step" => 0.01,  "tooltip" => "Rock porosity (volume fraction)",                            "group" => "rock"),
-    "permeability"              => Dict{String,Any}("label" => "Permeability",              "unit" => "mD",      "min" => 0.001, "max" => 5000,  "step" => 1,     "tooltip" => "Rock permeability in millidarcys",                           "group" => "rock"),
+    "surface_temperature"       => Dict{String,Any}("label" => "Surface temperature",       "unit" => "°C",      "min" => -10,   "max" => 40,    "step" => 0.5,   "tooltip" => "Mean annual temperature at the surface",                     "group" => "Rock Properties"),
+    "geothermal_gradient"       => Dict{String,Any}("label" => "Geothermal gradient",       "unit" => "K/m",     "min" => 0.01,  "max" => 0.10,  "step" => 0.005, "tooltip" => "Rate of temperature increase with depth",                    "group" => "Rock Properties"),
+    "rock_thermal_conductivity" => Dict{String,Any}("label" => "Thermal conductivity",      "unit" => "W/(m·K)", "min" => 0.5,   "max" => 10.0,  "step" => 0.1,   "tooltip" => "Thermal conductivity of the surrounding rock",               "group" => "Rock Properties"),
+    "rock_heat_capacity"        => Dict{String,Any}("label" => "Rock heat capacity",        "unit" => "J/(kg·K)","min" => 100,   "max" => 2000,  "step" => 50,    "tooltip" => "Specific heat capacity of the rock matrix",                  "group" => "Rock Properties"),
+    "porosity"                  => Dict{String,Any}("label" => "Porosity",                  "unit" => "–",       "min" => 0.001, "max" => 0.5,   "step" => 0.01,  "tooltip" => "Rock porosity (volume fraction)",                            "group" => "Rock Properties"),
+    "permeability"              => Dict{String,Any}("label" => "Permeability",              "unit" => "mD",      "min" => 0.001, "max" => 5000,  "step" => 1,     "tooltip" => "Rock permeability in millidarcys",                           "group" => "Rock Properties"),
     # Operation
-    "temperature_inj"           => Dict{String,Any}("label" => "Injection temperature",     "unit" => "°C",      "min" => 5,     "max" => 100,   "step" => 1,     "tooltip" => "Temperature of injected fluid",                              "group" => "operation"),
-    "flow_rate"                 => Dict{String,Any}("label" => "Flow rate",                 "unit" => "m³/h",    "min" => 1,     "max" => 500,   "step" => 1,     "tooltip" => "Volumetric flow rate",                                       "group" => "operation"),
-    "num_years"                 => Dict{String,Any}("label" => "Simulation years",          "unit" => "yr",      "min" => 1,     "max" => 500,   "step" => 1,     "tooltip" => "Duration of the simulation",                                 "group" => "simulation"),
+    "temperature_inj"           => Dict{String,Any}("label" => "Injection temperature",     "unit" => "°C",      "min" => 5,     "max" => 100,   "step" => 1,     "tooltip" => "Temperature of injected fluid",                              "group" => "Operation"),
+    "flow_rate"                 => Dict{String,Any}("label" => "Flow rate",                 "unit" => "m³/h",    "min" => 1,     "max" => 500,   "step" => 1,     "tooltip" => "Volumetric flow rate",                                       "group" => "Operation"),
+    "num_years"                 => Dict{String,Any}("label" => "Simulation years",          "unit" => "yr",      "min" => 1,     "max" => 500,   "step" => 1,     "tooltip" => "Duration of the simulation",                                 "group" => "Simulation"),
     # BTES-specific
-    "num_wells_btes"            => Dict{String,Any}("label" => "Number of wells",           "unit" => "–",       "min" => 4,     "max" => 200,   "step" => 1,     "tooltip" => "Total number of boreholes in the BTES array",                "group" => "btes"),
-    "num_sectors"               => Dict{String,Any}("label" => "Number of sectors",         "unit" => "–",       "min" => 1,     "max" => 20,    "step" => 1,     "tooltip" => "Number of sectors the wells are divided into",               "group" => "btes"),
-    "well_spacing"              => Dict{String,Any}("label" => "Well spacing",              "unit" => "m",       "min" => 2,     "max" => 20,    "step" => 0.5,   "tooltip" => "Horizontal spacing between adjacent boreholes",              "group" => "btes"),
-    "temperature_charge"        => Dict{String,Any}("label" => "Charge temperature",        "unit" => "°C",      "min" => 30,    "max" => 150,   "step" => 1,     "tooltip" => "Injection temperature during charging",                      "group" => "btes"),
-    "temperature_discharge"     => Dict{String,Any}("label" => "Discharge temperature",     "unit" => "°C",      "min" => 5,     "max" => 50,    "step" => 1,     "tooltip" => "Injection temperature during discharging",                   "group" => "btes"),
-    "rate_charge"               => Dict{String,Any}("label" => "Charge rate",               "unit" => "L/s",     "min" => 0.1,   "max" => 50,    "step" => 0.1,   "tooltip" => "Injection rate during charging per sector",                   "group" => "btes"),
-    # Doublet-specific
-    "spacing_top"               => Dict{String,Any}("label" => "Surface well spacing",      "unit" => "m",       "min" => 10,    "max" => 500,   "step" => 10,    "tooltip" => "Horizontal distance between wells at the surface",           "group" => "doublet"),
-    "spacing_bottom"            => Dict{String,Any}("label" => "Reservoir well spacing",    "unit" => "m",       "min" => 100,   "max" => 5000,  "step" => 50,    "tooltip" => "Horizontal distance between wells in the reservoir",         "group" => "doublet"),
-    "depth_deviation"           => Dict{String,Any}("label" => "Deviation depth",           "unit" => "m",       "min" => 100,   "max" => 5000,  "step" => 50,    "tooltip" => "Depth at which the well starts to deviate",                  "group" => "doublet"),
+    "num_wells_btes"            => Dict{String,Any}("label" => "Number of wells",           "unit" => "–",       "min" => 4,     "max" => 200,   "step" => 1,     "tooltip" => "Total number of boreholes in the BTES array",                "group" => "BTES Layout"),
+    "num_sectors"               => Dict{String,Any}("label" => "Number of sectors",         "unit" => "–",       "min" => 1,     "max" => 20,    "step" => 1,     "tooltip" => "Number of sectors the wells are divided into",               "group" => "BTES Layout"),
+    "well_spacing"              => Dict{String,Any}("label" => "Well spacing",              "unit" => "m",       "min" => 2,     "max" => 20,    "step" => 0.5,   "tooltip" => "Horizontal spacing between adjacent boreholes",              "group" => "BTES Layout"),
+    "temperature_charge"        => Dict{String,Any}("label" => "Charge temperature",        "unit" => "°C",      "min" => 30,    "max" => 150,   "step" => 1,     "tooltip" => "Injection temperature during charging",                      "group" => "Operation"),
+    "temperature_discharge"     => Dict{String,Any}("label" => "Discharge temperature",     "unit" => "°C",      "min" => 5,     "max" => 50,    "step" => 1,     "tooltip" => "Injection temperature during discharging",                   "group" => "Operation"),
+    "rate_charge"               => Dict{String,Any}("label" => "Charge rate",               "unit" => "L/s",     "min" => 0.1,   "max" => 50,    "step" => 0.1,   "tooltip" => "Injection rate during charging per sector",                   "group" => "Operation"),
 )
 
 """Parameter keys used for each case type, in display order."""
@@ -130,14 +127,21 @@ const CASE_PARAMS = Dict{SimCaseType, Vector{String}}(
         "temperature_charge", "temperature_discharge",
         "rate_charge", "num_years",
     ],
-    SIM_DOUBLET => [
-        "well_depth", "borehole_diameter",
-        "spacing_top", "spacing_bottom", "depth_deviation",
-        "surface_temperature", "geothermal_gradient",
-        "rock_thermal_conductivity", "rock_heat_capacity",
-        "porosity", "permeability",
-        "temperature_inj", "flow_rate", "num_years",
-    ],
+)
+
+"""Default values for all parameters."""
+const PARAM_DEFAULTS = Dict{String,Any}(
+    "well_depth"                => 200.0,
+    "borehole_diameter"         => 140.0,
+    "temperature_inj"           => 25.0,
+    "flow_rate"                 => 25.0,
+    "num_years"                 => 25,
+    "num_wells_btes"            => 48,
+    "num_sectors"               => 6,
+    "well_spacing"              => 5.0,
+    "temperature_charge"        => 90.0,
+    "temperature_discharge"     => 10.0,
+    "rate_charge"               => 0.5,
 )
 
 # ── Well metadata → simulation parameters ────────────────────────────────────
@@ -150,7 +154,8 @@ database into Fimbul.jl simulation parameters.  Properties that are not
 available in the dataset are filled with sensible Oslo-region defaults.
 
 Returns a Dict with keys:
-- `"case_type"` — string label ("AGS", "BTES", "DOUBLET")
+- `"simulatable"` — whether this well type supports simulation
+- `"case_type"` — string label ("AGS", "BTES") or `nothing`
 - `"case_label"` — human-readable case name
 - `"case_description"` — short description
 - `"well_id"` — well identifier from the metadata
@@ -160,19 +165,28 @@ Returns a Dict with keys:
 - `"sources"` — Dict indicating whether each value came from "data" or "default"
 """
 function well_to_simulation_params(properties::AbstractDict)
-    # Determine well type and case
     layer_name = get(properties, "layer", "EnergiBrønn")
-    case_type = select_case_type(layer_name isa Nothing ? "EnergiBrønn" : string(layer_name))
-    case_key = case_type == SIM_AGS ? "AGS" : case_type == SIM_BTES ? "BTES" : "DOUBLET"
-
-    # Build well identifier
+    layer_name = layer_name isa Nothing ? "EnergiBrønn" : string(layer_name)
+    case_type = select_case_type(layer_name)
     well_id = _well_identifier(properties)
+
+    if case_type === nothing
+        return Dict{String,Any}(
+            "simulatable"      => false,
+            "case_type"        => nothing,
+            "well_id"          => well_id,
+            "parameters"       => Dict{String,Any}(),
+            "parameter_order"  => String[],
+            "metadata"         => Dict{String,Any}(),
+            "sources"          => Dict{String,String}(),
+        )
+    end
+
+    case_key = case_type == SIM_AGS ? "AGS" : "BTES"
 
     # Extract known values from metadata
     depth = _numeric(get(properties, "boretLengde", nothing))
     diameter = _numeric(get(properties, "diameterBorehull", nothing))
-
-    # BTES fields
     n_energy_wells = _numeric(get(properties, "antallEnergiBrønner", nothing))
     heating_power  = _numeric(get(properties, "brønnpVEffekt", nothing))
 
@@ -196,6 +210,7 @@ function well_to_simulation_params(properties::AbstractDict)
     end
 
     return Dict{String,Any}(
+        "simulatable"      => true,
         "case_type"        => case_key,
         "case_label"       => CASE_TYPE_LABELS[case_type],
         "case_description" => CASE_TYPE_DESCRIPTIONS[case_type],
@@ -223,7 +238,6 @@ function _resolve_param(key, depth, diameter, n_energy_wells, heating_power)
         return (max(4, round(Int, n_energy_wells)), "data")
     end
     if key == "flow_rate" && heating_power !== nothing
-        # Rough estimate: Q ≈ P / (ρ·cp·ΔT), converted from m³/s to m³/h
         rate_m3h = heating_power / (WATER_VOLUMETRIC_HEAT_CAPACITY * ASSUMED_DELTA_T) * SECONDS_PER_HOUR
         return (max(1.0, round(rate_m3h; digits=1)), "data")
     end
@@ -233,27 +247,8 @@ function _resolve_param(key, depth, diameter, n_energy_wells, heating_power)
         return (OSLO_DEFAULTS[key], "default")
     end
 
-    # Case-type-specific defaults
-    defaults = Dict{String,Any}(
-        "well_depth"            => 200.0,
-        "borehole_diameter"     => 140.0,
-        "temperature_inj"       => 25.0,
-        "flow_rate"             => 25.0,
-        "num_years"             => 25,
-        # BTES
-        "num_wells_btes"        => 48,
-        "num_sectors"           => 6,
-        "well_spacing"          => 5.0,
-        "temperature_charge"    => 90.0,
-        "temperature_discharge" => 10.0,
-        "rate_charge"           => 0.5,
-        # Doublet
-        "spacing_top"           => 100.0,
-        "spacing_bottom"        => 1000.0,
-        "depth_deviation"       => 800.0,
-    )
-
-    val = get(defaults, key, 0.0)
+    # General defaults
+    val = get(PARAM_DEFAULTS, key, 0.0)
     return (val, "default")
 end
 
@@ -312,28 +307,23 @@ end
 
 Execute a Fimbul.jl simulation using the prepared parameter set.
 
-Requires `Fimbul` to be installed and loaded. If Fimbul is not available,
-returns a mock result with representative data for UI development.
+Uses the Fimbul.jl package to run the actual simulation. Falls back to
+mock results only when `mock=true` is passed (for testing).
 """
-function run_fimbul_simulation(setup::AbstractDict)
+function run_fimbul_simulation(setup::AbstractDict; mock::Bool=false)
     case_type = get(setup, "case_type", "AGS")
     params    = setup["parameters"]
 
-    # Check whether Fimbul is available
-    fimbul_available = isdefined(Main, :Fimbul)
-
-    if fimbul_available
-        return _run_fimbul_live(case_type, params)
-    else
+    if mock
         return _run_mock_simulation(case_type, params)
     end
+
+    return _run_fimbul_live(case_type, params)
 end
 
-"""Run simulation using Fimbul.jl (requires the package to be loaded)."""
+"""Run simulation using Fimbul.jl."""
 function _run_fimbul_live(case_type, params)
     try
-        Fimbul = Main.Fimbul
-
         if case_type == "AGS"
             case = Fimbul.ags(;
                 porosity                  = params["porosity"],
@@ -344,7 +334,7 @@ function _run_fimbul_live(case_type, params)
                 thermal_gradient          = params["geothermal_gradient"] * Fimbul.Kelvin / Fimbul.meter,
                 rate                      = params["flow_rate"] * Fimbul.meter^3 / Fimbul.hour,
                 temperature_inj           = Fimbul.convert_to_si(params["temperature_inj"], :Celsius),
-                num_years                 = params["num_years"],
+                num_years                 = round(Int, params["num_years"]),
             )
         elseif case_type == "BTES"
             case = Fimbul.btes(;
@@ -358,38 +348,36 @@ function _run_fimbul_live(case_type, params)
                 geothermal_gradient  = params["geothermal_gradient"] * Fimbul.Kelvin / Fimbul.meter,
                 num_years            = round(Int, params["num_years"]),
             )
-        elseif case_type == "DOUBLET"
-            case = Fimbul.geothermal_doublet(;
-                spacing_top         = params["spacing_top"],
-                spacing_bottom      = params["spacing_bottom"],
-                depth_1             = params["depth_deviation"],
-                depth_2             = params["well_depth"],
-                temperature_inj     = Fimbul.convert_to_si(params["temperature_inj"], :Celsius),
-                rate                = params["flow_rate"] * Fimbul.meter^3 / Fimbul.hour,
-                temperature_surface = Fimbul.convert_to_si(params["surface_temperature"], :Celsius),
-                num_years           = round(Int, params["num_years"]),
-            )
         else
             return Dict("status" => "error", "message" => "Unknown case type: $case_type")
         end
 
-        # Fimbul.simulate_reservoir expects (model, dt, forces, state0, parameters)
-        result = Fimbul.simulate_reservoir(case[1:5])
-        ws, states, t = result
+        # Simulate the entire specified period
+        results = Fimbul.simulate_reservoir(case)
+
+        # Extract well data from results
         well_data = Dict{String,Any}()
-        for (wname, wdata) in pairs(ws)
-            well_data[string(wname)] = Dict{String,Any}(
-                string(k) => v isa AbstractVector ? collect(Float64, v) : v
-                for (k, v) in pairs(wdata)
-            )
+        for (wname, wdata) in pairs(results.wells)
+            wdict = Dict{String,Any}()
+            for (k, v) in pairs(wdata)
+                if v isa AbstractVector
+                    if eltype(v) <: Number
+                        wdict[string(k)] = collect(Float64, v)
+                    end
+                end
+            end
+            well_data[string(wname)] = wdict
         end
+
+        # Convert timestamps from seconds to days
+        timestamps = collect(Float64, results.time)
 
         return Dict{String,Any}(
             "status"     => "completed",
             "message"    => "Simulation completed successfully.",
             "well_data"  => well_data,
-            "timestamps" => collect(Float64, t),
-            "num_steps"  => length(states),
+            "timestamps" => timestamps,
+            "num_steps"  => length(results.states),
         )
     catch e
         return Dict{String,Any}(
@@ -399,10 +387,17 @@ function _run_fimbul_live(case_type, params)
     end
 end
 
-"""Generate mock simulation results for UI development."""
+# ── Mock simulation (for testing only) ───────────────────────────────────────
+
+const MOCK_TEMP_DECAY_FACTOR = 0.3
+const MOCK_SEASONAL_AMPLITUDE = 0.5
+const MOCK_BTES_WARMUP_FRACTION = 4
+const DAYS_PER_YEAR = 365.25
+
+"""Generate mock simulation results for testing."""
 function _run_mock_simulation(case_type, params)
     n_years = round(Int, get(params, "num_years", 25))
-    n_steps = n_years * 12  # monthly output
+    n_steps = n_years * 12
     dt = range(0, n_years * DAYS_PER_YEAR; length=n_steps)
     timestamps = collect(Float64, dt)
 
@@ -411,38 +406,27 @@ function _run_mock_simulation(case_type, params)
     gradient = get(params, "geothermal_gradient", 0.025)
     T_bottom = T_surface + gradient * depth
 
-    # Produce plausible temperature curves with logarithmic decline and seasonal oscillation
     T_prod = [T_bottom - MOCK_TEMP_DECAY_FACTOR * log(1 + t / DAYS_PER_YEAR) + MOCK_SEASONAL_AMPLITUDE * sin(2π * t / DAYS_PER_YEAR) for t in timestamps]
     T_inj  = fill(get(params, "temperature_inj", 25.0), n_steps)
     rate   = fill(get(params, "flow_rate", 25.0), n_steps)
 
     well_data = Dict{String,Any}()
-    if case_type == "DOUBLET"
+    if case_type == "AGS"
         well_data["Producer"] = Dict{String,Any}(
-            "Temperature [°C]" => T_prod,
-            "Rate [m³/h]"      => .-rate,
-        )
-        well_data["Injector"] = Dict{String,Any}(
-            "Temperature [°C]" => T_inj,
-            "Rate [m³/h]"      => rate,
-        )
-    elseif case_type == "AGS"
-        well_data["Producer"] = Dict{String,Any}(
-            "Temperature [°C]" => T_prod,
-            "Rate [m³/h]"      => rate,
+            "temperature" => T_prod,
+            "mass_rate"   => rate,
         )
     else  # BTES
-        T_charge = fill(get(params, "temperature_charge", 90.0), n_steps)
         T_out = [T_surface + (get(params, "temperature_charge", 90.0) - T_surface) * (1 - exp(-i / (n_steps / MOCK_BTES_WARMUP_FRACTION))) * (0.5 + MOCK_SEASONAL_AMPLITUDE * sin(2π * t / DAYS_PER_YEAR)) for (i, t) in enumerate(timestamps)]
         well_data["BTES Array"] = Dict{String,Any}(
-            "Temperature [°C]" => T_out,
-            "Rate [L/s]"       => fill(get(params, "rate_charge", 0.5), n_steps),
+            "temperature" => T_out,
+            "mass_rate"   => fill(get(params, "rate_charge", 0.5), n_steps),
         )
     end
 
     return Dict{String,Any}(
         "status"     => "completed",
-        "message"    => "Mock simulation completed (Fimbul.jl not loaded). Results are illustrative.",
+        "message"    => "Mock simulation completed (for testing).",
         "well_data"  => well_data,
         "timestamps" => timestamps,
         "num_steps"  => n_steps,

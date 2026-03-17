@@ -4,10 +4,10 @@
 Start an HTTP server that serves:
 - Static web files (HTML/JS/CSS) from `web_dir`
 - Processed GeoJSON data from `data_dir` under `/api/data/`
-- A WebSocket endpoint at `/ws` for real-time communication with Julia processes
+- Simulation setup and run endpoints under `/api/simulation/`
 
-The server is designed to be extensible: add new API routes via `register_route!`
-or connect Julia computation via the WebSocket interface.
+The server uses Fimbul.jl for geothermal simulations. No separate Julia
+server is needed — everything runs in this single process.
 """
 function start_server(; host::AbstractString="127.0.0.1", port::Int=8080,
                        data_dir::AbstractString="processed_data",
@@ -127,7 +127,7 @@ function start_server(; host::AbstractString="127.0.0.1", port::Int=8080,
     println("Starting GeothermalViz server at http://$host:$port")
     println("  Web interface: http://$host:$port/")
     println("  API endpoint:  http://$host:$port/api/layers")
-    println("  Data endpoint: http://$host:$port/api/data/{layer}")
+    println("  Simulation:    http://$host:$port/api/simulation/setup")
     println("Press Ctrl+C to stop.")
 
     HTTP.serve(handle_request, host, port)
