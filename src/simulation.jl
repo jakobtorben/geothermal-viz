@@ -214,7 +214,7 @@ const PARAM_METADATA = Dict{String,Dict{String,Any}}(
     "porosity"                  => Dict{String,Any}("label" => "Porosity",                  "unit" => "–",       "min" => 0.001, "max" => 0.5,   "step" => 0.01,  "tooltip" => "Rock porosity (volume fraction)",                            "group" => "Rock Properties"),
     "permeability"              => Dict{String,Any}("label" => "Permeability",              "unit" => "mD",      "min" => 0.001, "max" => 5000,  "step" => 1,     "tooltip" => "Rock permeability in millidarcys",                           "group" => "Rock Properties"),
     # Grid
-    "num_segments"              => Dict{String,Any}("label" => "Well segments",             "unit" => "–",       "min" => 2,     "max" => 100,   "step" => 1,     "tooltip" => "Number of vertical grid cells along the well",               "group" => "Grid"),
+    "num_segments"              => Dict{String,Any}("label" => "Well segments",             "unit" => "–",       "min" => 2,     "max" => 100,   "step" => 1,     "tooltip" => "Number of vertical grid cells in the 3D well visualisation", "group" => "Visualisation"),
     # Operation
     "temperature_inj"           => Dict{String,Any}("label" => "Injection temperature",     "unit" => "°C",      "min" => 5,     "max" => 100,   "step" => 1,     "tooltip" => "Temperature of injected fluid",                              "group" => "Operation"),
     "flow_rate"                 => Dict{String,Any}("label" => "Flow rate",                 "unit" => "m³/h",    "min" => 1,     "max" => 500,   "step" => 1,     "tooltip" => "Volumetric flow rate",                                       "group" => "Operation"),
@@ -444,26 +444,10 @@ function _run_fimbul_live(case_type, params)
     try
         _sim_log_push!("Initializing $case_type simulation...")
 
-        num_seg = round(Int, get(params, "num_segments", 10))
+        # Note: num_segments controls the 3D wellbore visualisation only
+        # and is not passed to the simulator.
         if case_type == "AGS"
             _sim_log_push!("Creating AGS case with well depth=$(get(params, "well_depth", "?"))m...")
-            # Compute hz (cell heights per depth layer) from num_segments.
-            # Fimbul.ags uses a `depths` vector that defines layer boundaries.
-            # We use the default Fimbul AGS depths (matching ags.jl defaults)
-            # and distribute num_segments across layers proportionally to
-            # their thickness.
-            depths = [0.0, 1500.0, 2300.0, 2400.0, 2800.0]  # Fimbul AGS default layer boundaries [m]
-            dz = diff(depths)
-            total = sum(dz)
-            # Allocate at least 1 cell per layer, rest proportional
-            n_layers = length(dz)
-            remaining = max(num_seg - n_layers, 0)
-            cells_per_layer = ones(Int, n_layers)
-            for i in 1:n_layers
-                cells_per_layer[i] += round(Int, remaining * dz[i] / total)
-            end
-            hz_vec = dz ./ cells_per_layer
-
             case = Fimbul.ags(;
                 porosity                  = params["porosity"],
                 permeability              = params["permeability"] * 1e-3 * Fimbul.darcy,
@@ -474,14 +458,9 @@ function _run_fimbul_live(case_type, params)
                 rate                      = params["flow_rate"] * Fimbul.meter^3 / Fimbul.hour,
                 temperature_inj           = Fimbul.convert_to_si(params["temperature_inj"], :Celsius),
                 num_years                 = round(Int, params["num_years"]),
-                hz                        = hz_vec,
             )
         elseif case_type == "BTES"
             _sim_log_push!("Creating BTES case with $(get(params, "num_wells_btes", "?")) wells...")
-            # Note: num_segments is shown in the BTES setup for the 3D
-            # wellbore visualisation only. Mapping it to Fimbul's n_z
-            # (a per-layer cell count array) requires a more complex mapping
-            # that is left as future work.
             case = Fimbul.btes(;
                 num_wells            = round(Int, params["num_wells_btes"]),
                 num_sectors          = round(Int, params["num_sectors"]),

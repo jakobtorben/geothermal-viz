@@ -304,15 +304,18 @@
     /**
      * Build all vertex data for the well visualisation.
      *
-     * Order of drawing layers (all in one buffer):
-     * 1. Filled segment cylinders (depth-coloured, opaque)
-     * 2. Wireframe edges per segment
-     * 3. Outer casing tube (semi-transparent)
-     * 4. Inner drill-string tube
-     * 5. Wellhead cap (red marker)
+     * Returns { opaque: Float32Array, transparent: Float32Array }.
+     *
+     * Opaque  group: segment cylinders, drill-string, wellhead cap.
+     * Transparent group: wireframe edges, outer casing tube.
+     *
+     * The render function draws the opaque group first (with depth write)
+     * then the transparent group (without depth write) to eliminate
+     * z-fighting and incorrect transparency ordering.
      */
     function buildVertices(center, scale, params, caseType, progress) {
-        const arr   = [];
+        const opaque = [];
+        const transparent = [];
         const depth = params.well_depth || 200;
         const nSeg  = Math.max(MIN_SEGMENTS, Math.min(Math.round(params.num_segments || 10), MAX_SEGMENTS));
 
@@ -338,7 +341,7 @@
             const cy = center.y - pos.dy * scale;
             let curZ = VERTICAL_OFFSET;
 
-            // ── 1. Segment cylinders (bottom = deep, top = shallow) ──
+            // ── Opaque: Segment cylinders (bottom = deep, top = shallow) ──
             for (let i = 0; i < nSeg; i++) {
                 const t   = nSeg > 1 ? i / (nSeg - 1) : 0.5;
                 const col = depthColor(t);
@@ -346,46 +349,51 @@
                 const z1  = (curZ + segHeight) * scale * progress;
 
                 if (z1 > z0 + 1e-12) {
-                    addCylinder(arr, cx, cy, z0, z1, baseRadius, col, 0.92);
+                    addCylinder(opaque, cx, cy, z0, z1, baseRadius, col, 1.0);
                 }
                 curZ += segTotal;
             }
 
-            // ── 2. Wireframe edges per segment ──
+            // ── Transparent: Wireframe edges per segment ──
             curZ = VERTICAL_OFFSET;
             for (let i = 0; i < nSeg; i++) {
                 const z0 = curZ * scale * progress;
                 const z1 = (curZ + segHeight) * scale * progress;
                 if (z1 > z0 + 1e-12) {
-                    addWireframe(arr, cx, cy, z0, z1, baseRadius, wireThick);
+                    // Slightly larger radius (×1.01) to sit just outside the
+                    // opaque segment surface and avoid z-fighting.
+                    addWireframe(transparent, cx, cy, z0, z1, baseRadius * 1.01, wireThick);
                 }
                 curZ += segTotal;
             }
 
-            // ── 3. Outer casing tube (semi-transparent) ──
+            // ── Transparent: Outer casing tube ──
             const casingR = baseRadius * CASING_RADIUS_MULT;
             const wellZ0  = VERTICAL_OFFSET * scale * progress;
             const wellZ1  = (VERTICAL_OFFSET + depth) * scale * progress;
             if (wellZ1 > wellZ0 + 1e-12) {
-                addCylinder(arr, cx, cy, wellZ0, wellZ1, casingR, CASING_COLOR, 0.15);
+                addCylinder(transparent, cx, cy, wellZ0, wellZ1, casingR, CASING_COLOR, 0.15);
             }
 
-            // ── 4. Inner drill-string tube ──
+            // ── Opaque: Inner drill-string tube ──
             const drillR = baseRadius * DRILL_RADIUS_MULT;
             if (wellZ1 > wellZ0 + 1e-12) {
-                addCylinder(arr, cx, cy, wellZ0, wellZ1, drillR, DRILL_COLOR, 0.85);
+                addCylinder(opaque, cx, cy, wellZ0, wellZ1, drillR, DRILL_COLOR, 1.0);
             }
 
-            // ── 5. Wellhead cap (red marker on top) ──
+            // ── Opaque: Wellhead cap (red marker on top) ──
             const capH  = Math.max(depth * CAP_HEIGHT_FRAC, 3);
             const capZ0 = (VERTICAL_OFFSET + depth) * scale * progress;
             const capZ1 = (VERTICAL_OFFSET + depth + capH) * scale * progress;
             const capR  = baseRadius * 1.25;
             if (capZ1 > capZ0 + 1e-12) {
-                addCylinder(arr, cx, cy, capZ0, capZ1, capR, CAP_COLOR, 0.95);
+                addCylinder(opaque, cx, cy, capZ0, capZ1, capR, CAP_COLOR, 1.0);
             }
         }
-        return new Float32Array(arr);
+        return {
+            opaque:      new Float32Array(opaque),
+            transparent: new Float32Array(transparent),
+        };
     }
 
     // ── Layer state (module-scoped singleton) ──────────────────────────────
@@ -399,13 +407,15 @@
         progress:   0,
         animStart:  0,
         needsBuild: false,
-        // GL handles
-        program:    null,
-        buffer:     null,
-        vertCount:  0,
-        aPos:       -1,
-        aColor:     -1,
-        uMatrix:    null,
+        // GL handles — two buffers for two-pass rendering
+        program:       null,
+        opaqueBuffer:  null,
+        transBuffer:   null,
+        opaqueCount:   0,
+        transCount:    0,
+        aPos:          -1,
+        aColor:        -1,
+        uMatrix:       null,
     };
 
     // ── Geometry rebuild ───────────────────────────────────────────────────
@@ -419,13 +429,18 @@
 
     function rebuild(gl) {
         const ll = getLngLat();
-        if (!ll || !layerState.params || !layerState.buffer) return;
+        if (!ll || !layerState.params || !layerState.opaqueBuffer) return;
         const mc    = maplibregl.MercatorCoordinate.fromLngLat(ll, 0);
         const scale = mc.meterInMercatorCoordinateUnits();
-        const verts = buildVertices(mc, scale, layerState.params, layerState.caseType, layerState.progress);
-        gl.bindBuffer(gl.ARRAY_BUFFER, layerState.buffer);
-        gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
-        layerState.vertCount = verts.length / 7;
+        const { opaque, transparent } = buildVertices(mc, scale, layerState.params, layerState.caseType, layerState.progress);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, layerState.opaqueBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, opaque, gl.DYNAMIC_DRAW);
+        layerState.opaqueCount = opaque.length / 7;
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, layerState.transBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, transparent, gl.DYNAMIC_DRAW);
+        layerState.transCount = transparent.length / 7;
     }
 
     // ── Custom layer object ────────────────────────────────────────────────
@@ -441,7 +456,8 @@
             layerState.aPos    = gl.getAttribLocation(layerState.program, "a_pos");
             layerState.aColor  = gl.getAttribLocation(layerState.program, "a_color");
             layerState.uMatrix = gl.getUniformLocation(layerState.program, "u_matrix");
-            layerState.buffer  = gl.createBuffer();
+            layerState.opaqueBuffer = gl.createBuffer();
+            layerState.transBuffer  = gl.createBuffer();
             layerState.needsBuild = true;
         },
 
@@ -461,29 +477,51 @@
                 rebuild(gl);
                 layerState.needsBuild = false;
             }
-            if (layerState.vertCount === 0) return;
+            if (layerState.opaqueCount === 0 && layerState.transCount === 0) return;
 
             gl.useProgram(layerState.program);
             gl.uniformMatrix4fv(layerState.uMatrix, false, matrix);
-            gl.enable(gl.BLEND);
-            gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
             gl.enable(gl.DEPTH_TEST);
 
             const stride = 7 * 4;
-            gl.bindBuffer(gl.ARRAY_BUFFER, layerState.buffer);
-            gl.enableVertexAttribArray(layerState.aPos);
-            gl.vertexAttribPointer(layerState.aPos,   3, gl.FLOAT, false, stride, 0);
-            gl.enableVertexAttribArray(layerState.aColor);
-            gl.vertexAttribPointer(layerState.aColor, 4, gl.FLOAT, false, stride, 12);
-            gl.drawArrays(gl.TRIANGLES, 0, layerState.vertCount);
+
+            // ── Pass 1: opaque geometry (segments, drill-string, cap) ──
+            // Depth write ON, no blending needed (alpha = 1.0)
+            if (layerState.opaqueCount > 0) {
+                gl.depthMask(true);
+                gl.disable(gl.BLEND);
+                gl.bindBuffer(gl.ARRAY_BUFFER, layerState.opaqueBuffer);
+                gl.enableVertexAttribArray(layerState.aPos);
+                gl.vertexAttribPointer(layerState.aPos,   3, gl.FLOAT, false, stride, 0);
+                gl.enableVertexAttribArray(layerState.aColor);
+                gl.vertexAttribPointer(layerState.aColor, 4, gl.FLOAT, false, stride, 12);
+                gl.drawArrays(gl.TRIANGLES, 0, layerState.opaqueCount);
+            }
+
+            // ── Pass 2: transparent geometry (wireframe, casing) ──
+            // Depth write OFF so transparent surfaces don't z-fight
+            if (layerState.transCount > 0) {
+                gl.depthMask(false);
+                gl.enable(gl.BLEND);
+                gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+                gl.bindBuffer(gl.ARRAY_BUFFER, layerState.transBuffer);
+                gl.enableVertexAttribArray(layerState.aPos);
+                gl.vertexAttribPointer(layerState.aPos,   3, gl.FLOAT, false, stride, 0);
+                gl.enableVertexAttribArray(layerState.aColor);
+                gl.vertexAttribPointer(layerState.aColor, 4, gl.FLOAT, false, stride, 12);
+                gl.drawArrays(gl.TRIANGLES, 0, layerState.transCount);
+                gl.depthMask(true);
+            }
 
             if (animating && layerState.map) layerState.map.triggerRepaint();
         },
 
         onRemove(_map, gl) {
-            if (layerState.buffer)  { gl.deleteBuffer(layerState.buffer);   layerState.buffer  = null; }
-            if (layerState.program) { gl.deleteProgram(layerState.program);  layerState.program = null; }
-            layerState.vertCount = 0;
+            if (layerState.opaqueBuffer) { gl.deleteBuffer(layerState.opaqueBuffer); layerState.opaqueBuffer = null; }
+            if (layerState.transBuffer)  { gl.deleteBuffer(layerState.transBuffer);  layerState.transBuffer  = null; }
+            if (layerState.program)      { gl.deleteProgram(layerState.program);      layerState.program      = null; }
+            layerState.opaqueCount = 0;
+            layerState.transCount  = 0;
         },
     };
 
@@ -530,10 +568,11 @@
         if (layerState.map && layerState.map.getLayer(LAYER_ID)) {
             try { layerState.map.removeLayer(LAYER_ID); } catch (_e) { /* already removed */ }
         }
-        layerState.active    = false;
-        layerState.vertCount = 0;
-        layerState.params    = null;
-        layerState.lngLat    = null;
+        layerState.active      = false;
+        layerState.opaqueCount = 0;
+        layerState.transCount  = 0;
+        layerState.params      = null;
+        layerState.lngLat      = null;
         if (layerState.map) layerState.map.triggerRepaint();
         layerState.map = null;
     }

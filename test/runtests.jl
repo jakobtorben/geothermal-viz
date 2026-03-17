@@ -147,7 +147,7 @@ using JSON3
         @test result["parameters"]["num_segments"] == 10  # default
         @test result["sources"]["num_segments"] == "default"
         @test haskey(result["metadata"], "num_segments")
-        @test result["metadata"]["num_segments"]["group"] == "Grid"
+        @test result["metadata"]["num_segments"]["group"] == "Visualisation"
 
         @test "num_segments" in result2["parameter_order"]
         @test result2["parameters"]["num_segments"] == 10  # default
