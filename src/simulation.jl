@@ -37,6 +37,7 @@ const _sim_states = Ref{Any}(nothing)
 const _sim_state0 = Ref{Any}(nothing)
 const _image_cache = Dict{String, String}()
 const _colorrange_cache = Dict{String, Tuple{Float64, Float64}}()
+const _render_lock = ReentrantLock()
 
 """Push a log message to the simulation log (thread-safe)."""
 function _sim_log_push!(msg::AbstractString)
@@ -651,12 +652,12 @@ function _get_colorrange(var::AbstractString, delta::Bool)
     global_min = Inf
     global_max = -Inf
     for i in 1:length(states)
-        s = if delta && !isnothing(state0)
-            JutulDarcy.delta_state(state0, states[i])
+        raw = if delta && !isnothing(state0) && haskey(state0, sym)
+            states[i][sym] .- state0[sym]
         else
-            states[i]
+            states[i][sym]
         end
-        vals, _ = _convert_reservoir_variable(var, s[sym]; delta=delta)
+        vals, _ = _convert_reservoir_variable(var, raw; delta=delta)
         lo, hi = extrema(vals)
         global_min = min(global_min, lo)
         global_max = max(global_max, hi)
@@ -692,30 +693,39 @@ function render_reservoir_image(var::AbstractString, step::Int; delta::Bool=fals
         res_model = Fimbul.reservoir_model(case.model)
         mesh = Fimbul.physical_representation(res_model.data_domain)
         state = states[step]
+        sym = Symbol(var)
         title = "$var at step $step"
         if delta
             state0 = _sim_state0[]
-            isnothing(state0) && return ""
-            state = JutulDarcy.delta_state(state0, state)
+            (isnothing(state0) || !haskey(state0, sym)) && return ""
+            raw_vals = state[sym] .- state0[sym]
             title = "Δ $var at step $step"
+        else
+            raw_vals = state[sym]
         end
-        plot_vals, unit_label = _convert_reservoir_variable(var, state[Symbol(var)]; delta=delta)
+        plot_vals, unit_label = _convert_reservoir_variable(var, raw_vals; delta=delta)
         if !isempty(unit_label)
             title *= " [$unit_label]"
         end
         cmin, cmax = _get_colorrange(var, delta)
-        fig = Figure(size = (800, 600))
-        ax = Axis3(fig[1, 1], title = title, aspect = :data, zreversed = true)
-        p = Jutul.plot_cell_data!(ax, mesh, plot_vals, outer=true,
-            colormap=:seaborn_icefire_gradient, colorrange=(cmin, cmax))
-        Colorbar(fig[1, 2], p)
-        io = IOBuffer()
-        show(io, MIME("image/png"), fig)
-        img = base64encode(take!(io))
+        img = lock(_render_lock) do
+            fig = Figure(size = (800, 600))
+            ax = Axis3(fig[1, 1], title = title, aspect = :data, zreversed = true)
+            p = Jutul.plot_cell_data!(ax, mesh, plot_vals, outer=true,
+                colormap=:seaborn_icefire_gradient, colorrange=(cmin, cmax))
+            Colorbar(fig[1, 2], p)
+            io = IOBuffer()
+            show(io, MIME("image/png"), fig)
+            base64encode(take!(io))
+        end
         _image_cache[cache_key] = img
         return img
     catch e
-        @warn "Failed to render reservoir image for $var step $step (delta=$delta): $e"
+        err_msg = sprint(showerror, e; context=:limit => true)
+        if length(err_msg) > 500
+            err_msg = err_msg[1:500] * "…"
+        end
+        @warn "Failed to render reservoir image for $var step $step (delta=$delta): $err_msg"
         return ""
     end
 end
