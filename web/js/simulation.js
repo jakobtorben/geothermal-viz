@@ -23,6 +23,7 @@ const simState = {
     totalSteps: 0,
     imageCache: {},       // Client-side reservoir image cache
     imageLoading: false,
+    lngLat: null,         // { lng, lat } of the currently-setup well
 };
 
 // ── Initialisation ───────────────────────────────────────────────────────────
@@ -57,6 +58,10 @@ async function openSimPanel() {
     const layerName = props.layer || "";
     if (!SIMULATABLE_LAYERS.has(layerName)) return;
 
+    // Store well coordinates for 3D visualisation
+    const coords = feature.geometry.coordinates;
+    simState.lngLat = { lng: coords[0], lat: coords[1] };
+
     // Fetch simulation setup from Julia backend
     try {
         const resp = await fetch(`/api/simulation/setup`, {
@@ -74,6 +79,24 @@ async function openSimPanel() {
         renderSimSetup(setup);
         document.getElementById("sim-panel").classList.add("open");
         switchSimTab("setup");
+
+        // Emit event so the 3D wellbore layer can activate
+        emitEvent("simulationSetup", {
+            lngLat: simState.lngLat,
+            params: setup.parameters,
+            caseType: setup.case_type,
+        });
+
+        // Listen for parameter changes and relay to 3D visualisation
+        let paramTimer = null;
+        document.querySelectorAll("#sim-params .sim-param-input").forEach(input => {
+            input.addEventListener("input", () => {
+                clearTimeout(paramTimer);
+                paramTimer = setTimeout(() => {
+                    emitEvent("simulationParamChange", { params: collectParams() });
+                }, 150);
+            });
+        });
     } catch (err) {
         console.error("Failed to fetch simulation setup:", err);
     }
@@ -81,6 +104,7 @@ async function openSimPanel() {
 
 function closeSimPanel() {
     document.getElementById("sim-panel").classList.remove("open");
+    emitEvent("simulationClosed", {});
 }
 
 // ── Show "Setup Simulation" button only for simulatable wells ────────────────

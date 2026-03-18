@@ -272,7 +272,7 @@ function selectWell(feature, lngLat) {
         ? `Well #${props.brønnNr}`
         : (props.brønnParkNr ? `Well Park #${props.brønnParkNr}` : cfg.label);
 
-    state.popup = new maplibregl.Popup({ offset: 15, maxWidth: "300px" })
+    state.popup = new maplibregl.Popup({ offset: [0, 10], anchor: "top", maxWidth: "300px" })
         .setLngLat(lngLat)
         .setHTML(`
             <div class="popup-title">${title}</div>
@@ -494,6 +494,7 @@ async function main() {
 window.GeothermalViz = {
     state,
     registerExtension,
+    emitEvent,
     connectToJulia,
     CONFIG
 };

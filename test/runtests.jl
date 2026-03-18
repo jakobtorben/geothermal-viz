@@ -141,6 +141,16 @@ using JSON3
         result4 = well_to_simulation_params(props4)
         @test result4["case_type"] == "AGS"
         @test result4["sources"]["well_depth"] == "default"
+
+        # num_segments present in both AGS and BTES parameter sets
+        @test "num_segments" in result["parameter_order"]
+        @test result["parameters"]["num_segments"] == 10  # default
+        @test result["sources"]["num_segments"] == "default"
+        @test haskey(result["metadata"], "num_segments")
+        @test result["metadata"]["num_segments"]["group"] == "Visualisation"
+
+        @test "num_segments" in result2["parameter_order"]
+        @test result2["parameters"]["num_segments"] == 10  # default
     end
 
     @testset "Simulation — Validation" begin
