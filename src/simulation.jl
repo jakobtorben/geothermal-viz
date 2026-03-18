@@ -17,6 +17,121 @@ Typical workflow:
 """
 
 using Fimbul
+using Dates
+using CairoMakie
+using Jutul
+using JutulDarcy
+import Base64: base64encode
+
+# ── Async simulation state ───────────────────────────────────────────────────
+
+const _sim_lock = ReentrantLock()
+const _sim_log = Ref{Vector{String}}(String[])
+const _sim_running = Ref{Bool}(false)
+const _sim_result = Ref{Any}(nothing)
+
+# ── Server-side state for lazy reservoir image rendering ─────────────────────
+
+const _sim_case = Ref{Any}(nothing)
+const _sim_states = Ref{Any}(nothing)
+const _sim_state0 = Ref{Any}(nothing)
+const _image_cache = Dict{String, String}()
+const _colorrange_cache = Dict{String, Tuple{Float64, Float64}}()
+const _render_lock = ReentrantLock()
+
+"""Push a log message to the simulation log (thread-safe)."""
+function _sim_log_push!(msg::AbstractString)
+    lock(_sim_lock) do
+        push!(_sim_log[], "[$(Dates.format(now(), "HH:mm:ss"))] $msg")
+    end
+end
+
+"""
+    _capture_output(f) -> result
+
+Run `f()` while capturing everything written to stdout and stderr.
+Captured lines are pushed to the simulation log via `_sim_log_push!`.
+"""
+function _capture_output(f)
+    original_stdout = stdout
+    original_stderr = stderr
+    out_rd, out_wr = redirect_stdout()
+    err_rd, err_wr = redirect_stderr()
+    output = Channel{String}(Inf)
+    # Reader tasks: forward lines to the channel
+    reader_out = @async begin
+        for line in eachline(out_rd)
+            put!(output, line)
+        end
+    end
+    reader_err = @async begin
+        for line in eachline(err_rd)
+            put!(output, line)
+        end
+    end
+    # Consumer: push captured lines to the simulation log
+    consumer = @async begin
+        for line in output
+            _sim_log_push!(line)
+        end
+    end
+    try
+        return f()
+    finally
+        redirect_stdout(original_stdout)
+        redirect_stderr(original_stderr)
+        close(out_wr)
+        close(err_wr)
+        wait(reader_out)
+        wait(reader_err)
+        close(output)
+        wait(consumer)
+    end
+end
+
+"""Get a snapshot of the simulation status (thread-safe)."""
+function get_simulation_status()
+    lock(_sim_lock) do
+        Dict{String,Any}(
+            "running" => _sim_running[],
+            "log"     => copy(_sim_log[]),
+            "result"  => _sim_result[],
+        )
+    end
+end
+
+"""Start a simulation asynchronously. Returns immediately."""
+function start_simulation_async(setup::AbstractDict; mock::Bool=false)
+    if _sim_running[]
+        return Dict{String,Any}("status" => "error", "message" => "A simulation is already running.")
+    end
+
+    lock(_sim_lock) do
+        _sim_log[] = String[]
+        _sim_running[] = true
+        _sim_result[] = nothing
+    end
+
+    Threads.@spawn begin
+        try
+            result = run_fimbul_simulation(setup; mock=mock)
+            lock(_sim_lock) do
+                _sim_result[] = result
+                _sim_running[] = false
+            end
+        catch e
+            lock(_sim_lock) do
+                _sim_result[] = Dict{String,Any}(
+                    "status"  => "error",
+                    "message" => "Simulation failed: $(sprint(showerror, e))",
+                )
+                _sim_running[] = false
+            end
+        end
+    end
+
+    return Dict{String,Any}("status" => "started", "message" => "Simulation started.")
+end
 
 # ── Physical constants for parameter estimation ──────────────────────────────
 
@@ -324,7 +439,10 @@ end
 """Run simulation using Fimbul.jl."""
 function _run_fimbul_live(case_type, params)
     try
+        _sim_log_push!("Initializing $case_type simulation...")
+
         if case_type == "AGS"
+            _sim_log_push!("Creating AGS case with well depth=$(get(params, "well_depth", "?"))m...")
             case = Fimbul.ags(;
                 porosity                  = params["porosity"],
                 permeability              = params["permeability"] * 1e-3 * Fimbul.darcy,
@@ -337,6 +455,7 @@ function _run_fimbul_live(case_type, params)
                 num_years                 = round(Int, params["num_years"]),
             )
         elseif case_type == "BTES"
+            _sim_log_push!("Creating BTES case with $(get(params, "num_wells_btes", "?")) wells...")
             case = Fimbul.btes(;
                 num_wells            = round(Int, params["num_wells_btes"]),
                 num_sectors          = round(Int, params["num_sectors"]),
@@ -352,38 +471,87 @@ function _run_fimbul_live(case_type, params)
             return Dict("status" => "error", "message" => "Unknown case type: $case_type")
         end
 
-        # Simulate the entire specified period
-        results = Fimbul.simulate_reservoir(case)
+        _sim_log_push!("Case created. Starting reservoir simulation...")
+        _sim_log_push!("This may take several minutes depending on model size.")
 
-        # Extract well data from results
+        # Simulate while capturing stdout/stderr (Fimbul progress bars etc.)
+        results = _capture_output() do
+            Fimbul.simulate_reservoir(case)
+        end
+
+        _sim_log_push!("Simulation completed. Extracting results...")
+
+        # Store case and states for lazy reservoir image rendering
+        _sim_case[] = case
+        _sim_states[] = results.states
+        _sim_state0[] = get(case.state0, :Reservoir, nothing)
+        empty!(_image_cache)
+        empty!(_colorrange_cache)
+
+        # Extract well data from results with unit conversion
         well_data = Dict{String,Any}()
         for (wname, wdata) in pairs(results.wells)
             wdict = Dict{String,Any}()
             for (k, v) in pairs(wdata)
-                if v isa AbstractVector
-                    if eltype(v) <: Number
-                        wdict[string(k)] = collect(Float64, v)
-                    end
+                if v isa AbstractVector && eltype(v) <: Number
+                    ckey, cvals = _convert_well_variable(string(k), collect(Float64, v))
+                    wdict[ckey] = cvals
                 end
             end
             well_data[string(wname)] = wdict
         end
 
         # Convert timestamps from seconds to days
-        timestamps = collect(Float64, results.time)
+        timestamps = collect(Float64, Fimbul.convert_from_si.(results.time, :day))
+
+        # Extract reservoir state variable names and count
+        reservoir_vars = String[]
+        if !isempty(results.states)
+            for (k, v) in pairs(results.states[1])
+                if v isa AbstractVector{<:Real}
+                    push!(reservoir_vars, string(k))
+                end
+            end
+        end
+
+        _sim_log_push!("Results extracted: $(length(well_data)) well(s), $(length(results.states)) timesteps.")
+        _sim_log_push!("Reservoir variables: $(join(reservoir_vars, ", "))")
+        _sim_log_push!("Simulation finished successfully.")
 
         return Dict{String,Any}(
-            "status"     => "completed",
-            "message"    => "Simulation completed successfully.",
-            "well_data"  => well_data,
-            "timestamps" => timestamps,
-            "num_steps"  => length(results.states),
+            "status"         => "completed",
+            "message"        => "Simulation completed successfully.",
+            "well_data"      => well_data,
+            "timestamps"     => timestamps,
+            "num_steps"      => length(results.states),
+            "reservoir_vars" => reservoir_vars,
         )
     catch e
+        _sim_log_push!("ERROR: $(sprint(showerror, e))")
         return Dict{String,Any}(
             "status"  => "error",
             "message" => "Simulation failed: $(sprint(showerror, e))",
         )
+    end
+end
+
+# ── Unit conversion helpers (following FimbulApp.jl pattern) ──────────────────
+
+const _K_to_C = 273.15
+const _m3s_to_Ls = 1000.0
+const _Pa_to_bar = 1e-5
+
+"""Convert a well output variable from SI units to user-friendly units."""
+function _convert_well_variable(name::String, values::Vector{Float64})
+    ln = lowercase(name)
+    if occursin("temperature", ln)
+        return name * " [°C]", values .- _K_to_C
+    elseif occursin("rate", ln) && !occursin("mass", ln)
+        return name * " [L/s]", values .* _m3s_to_Ls
+    elseif occursin("pressure", ln) || ln == "bhp"
+        return name * " [bar]", values .* _Pa_to_bar
+    else
+        return name, values
     end
 end
 
@@ -396,6 +564,8 @@ const DAYS_PER_YEAR = 365.25
 
 """Generate mock simulation results for testing."""
 function _run_mock_simulation(case_type, params)
+    _sim_log_push!("Starting mock $case_type simulation...")
+
     n_years = round(Int, get(params, "num_years", 25))
     n_steps = n_years * 12
     dt = range(0, n_years * DAYS_PER_YEAR; length=n_steps)
@@ -405,6 +575,8 @@ function _run_mock_simulation(case_type, params)
     T_surface = get(params, "surface_temperature", 7.0)
     gradient = get(params, "geothermal_gradient", 0.025)
     T_bottom = T_surface + gradient * depth
+
+    _sim_log_push!("Generating well data ($n_steps timesteps)...")
 
     T_prod = [T_bottom - MOCK_TEMP_DECAY_FACTOR * log(1 + t / DAYS_PER_YEAR) + MOCK_SEASONAL_AMPLITUDE * sin(2π * t / DAYS_PER_YEAR) for t in timestamps]
     T_inj  = fill(get(params, "temperature_inj", 25.0), n_steps)
@@ -424,11 +596,136 @@ function _run_mock_simulation(case_type, params)
         )
     end
 
+    # Generate mock reservoir vars (names only, no full grid data for mock)
+    reservoir_vars = ["Pressure", "Temperature"]
+
+    _sim_log_push!("Mock simulation completed.")
+
     return Dict{String,Any}(
-        "status"     => "completed",
-        "message"    => "Mock simulation completed (for testing).",
-        "well_data"  => well_data,
-        "timestamps" => timestamps,
-        "num_steps"  => n_steps,
+        "status"         => "completed",
+        "message"        => "Mock simulation completed (for testing).",
+        "well_data"      => well_data,
+        "timestamps"     => timestamps,
+        "num_steps"      => n_steps,
+        "reservoir_vars" => reservoir_vars,
     )
+end
+
+# ── Reservoir image rendering (following FimbulApp.jl pattern) ────────────────
+
+"""
+    _convert_reservoir_variable(var, values; delta=false)
+
+Convert reservoir state variable from SI units to user-friendly units.
+Returns `(converted_values, unit_label)`.
+"""
+function _convert_reservoir_variable(var::AbstractString, values; delta::Bool=false)
+    ln = lowercase(var)
+    if occursin("temperature", ln)
+        if delta
+            return values, "°C"  # K delta = °C delta
+        else
+            return values .- _K_to_C, "°C"
+        end
+    elseif occursin("pressure", ln)
+        return values .* _Pa_to_bar, "bar"
+    else
+        return values, ""
+    end
+end
+
+"""
+    _get_colorrange(var, delta)
+
+Compute global min/max color range across all stored timesteps for consistent coloring.
+Results are cached for performance.
+"""
+function _get_colorrange(var::AbstractString, delta::Bool)
+    cache_key = "$var:$delta"
+    haskey(_colorrange_cache, cache_key) && return _colorrange_cache[cache_key]
+
+    states = _sim_states[]
+    state0 = _sim_state0[]
+    isnothing(states) && return (0.0, 1.0)
+
+    sym = Symbol(var)
+    global_min = Inf
+    global_max = -Inf
+    for i in 1:length(states)
+        raw = if delta && !isnothing(state0) && haskey(state0, sym)
+            states[i][sym] .- state0[sym]
+        else
+            states[i][sym]
+        end
+        vals, _ = _convert_reservoir_variable(var, raw; delta=delta)
+        lo, hi = extrema(vals)
+        global_min = min(global_min, lo)
+        global_max = max(global_max, hi)
+    end
+
+    result = (global_min, global_max)
+    _colorrange_cache[cache_key] = result
+    return result
+end
+
+"""
+    render_reservoir_image(var, step; delta=false)
+
+Render a reservoir state image as a base64-encoded PNG string.
+Uses CairoMakie + Jutul.plot_cell_data! for 3D visualization.
+Results are cached server-side for performance.
+
+# Arguments
+- `var::AbstractString`: Variable name (e.g. "Temperature", "Pressure")
+- `step::Int`: 1-based timestep index
+- `delta::Bool`: If true, show difference from initial state
+"""
+function render_reservoir_image(var::AbstractString, step::Int; delta::Bool=false)
+    cache_key = "$var:$step:$delta"
+    haskey(_image_cache, cache_key) && return _image_cache[cache_key]
+
+    case = _sim_case[]
+    states = _sim_states[]
+    (isnothing(case) || isnothing(states)) && return ""
+    (step < 1 || step > length(states)) && return ""
+
+    try
+        res_model = Fimbul.reservoir_model(case.model)
+        mesh = Fimbul.physical_representation(res_model.data_domain)
+        state = states[step]
+        sym = Symbol(var)
+        title = "$var at step $step"
+        if delta
+            state0 = _sim_state0[]
+            (isnothing(state0) || !haskey(state0, sym)) && return ""
+            raw_vals = state[sym] .- state0[sym]
+            title = "Δ $var at step $step"
+        else
+            raw_vals = state[sym]
+        end
+        plot_vals, unit_label = _convert_reservoir_variable(var, raw_vals; delta=delta)
+        if !isempty(unit_label)
+            title *= " [$unit_label]"
+        end
+        cmin, cmax = _get_colorrange(var, delta)
+        img = lock(_render_lock) do
+            fig = Figure(size = (800, 600))
+            ax = Axis3(fig[1, 1], title = title, aspect = :data, zreversed = true)
+            p = Jutul.plot_cell_data!(ax, mesh, plot_vals, outer=true,
+                colormap=:seaborn_icefire_gradient, colorrange=(cmin, cmax))
+            Colorbar(fig[1, 2], p)
+            io = IOBuffer()
+            show(io, MIME("image/png"), fig)
+            base64encode(take!(io))
+        end
+        _image_cache[cache_key] = img
+        return img
+    catch e
+        err_msg = sprint(showerror, e; context=:limit => true)
+        if length(err_msg) > 500
+            err_msg = err_msg[1:500] * "…"
+        end
+        @warn "Failed to render reservoir image for $var step $step (delta=$delta): $err_msg"
+        return ""
+    end
 end

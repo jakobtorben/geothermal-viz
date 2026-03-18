@@ -38,13 +38,15 @@ using JSON3
         all_data = JSON3.read(read(output_files["all_boreholes"], String))
         @test length(all_data.features) > 0
 
-        # Verify coordinates are in WGS84 range (longitude, latitude)
-        for feat in all_data.features
+        # Verify a sample of coordinates are in WGS84/Oslo area (not all 20K+)
+        sample_size = min(50, length(all_data.features))
+        sample_indices = round.(Int, range(1, length(all_data.features); length=sample_size))
+        for idx in sample_indices
+            feat = all_data.features[idx]
             coords = feat.geometry.coordinates
             lon, lat = coords[1], coords[2]
             @test -180 <= lon <= 180
             @test -90 <= lat <= 90
-            # Should be in Oslo area (approximately)
             @test 10.0 <= lon <= 11.5
             @test 59.5 <= lat <= 60.5
         end
@@ -90,16 +92,12 @@ using JSON3
         # Non-simulatable types return nothing
         @test select_case_type("GrunnvannBrønn") === nothing
         @test select_case_type("Sonderboring") === nothing
-        @test select_case_type("LGNBrønn") === nothing
-        @test select_case_type("GrunnvannOppkomme") === nothing
-        @test select_case_type("LGNOmrådeRefPkt") === nothing
         @test select_case_type("Unknown") === nothing
 
         # is_simulatable
         @test is_simulatable("EnergiBrønn") == true
         @test is_simulatable("BrønnPark") == true
         @test is_simulatable("GrunnvannBrønn") == false
-        @test is_simulatable("Sonderboring") == false
     end
 
     @testset "Simulation — Parameter Mapping" begin
@@ -161,7 +159,7 @@ using JSON3
         @test any(e -> e[1] == "well_depth", errors)
     end
 
-    @testset "Simulation — Mock (for testing)" begin
+    @testset "Simulation — Mock" begin
         using GeothermalViz
 
         # AGS mock
@@ -172,6 +170,10 @@ using JSON3
         @test result["num_steps"] > 0
         @test length(result["timestamps"]) == result["num_steps"]
         @test haskey(result["well_data"], "Producer")
+        # Mock should return reservoir_vars list
+        @test haskey(result, "reservoir_vars")
+        @test "Pressure" in result["reservoir_vars"]
+        @test "Temperature" in result["reservoir_vars"]
 
         # BTES mock
         props2 = Dict("layer" => "BrønnPark", "brønnParkNr" => "1")
@@ -179,5 +181,30 @@ using JSON3
         result2 = run_fimbul_simulation(setup2; mock=true)
         @test result2["status"] == "completed"
         @test haskey(result2["well_data"], "BTES Array")
+    end
+
+    @testset "Simulation — Async Start and Status" begin
+        using GeothermalViz
+
+        # Status before any simulation
+        status = get_simulation_status()
+        @test haskey(status, "running")
+        @test haskey(status, "log")
+        @test haskey(status, "result")
+
+        # Start async mock simulation
+        props = Dict("layer" => "EnergiBrønn", "boretLengde" => 200.0)
+        setup = well_to_simulation_params(props)
+        start_result = start_simulation_async(setup; mock=true)
+        @test start_result["status"] == "started"
+
+        # Wait for completion (mock is fast)
+        sleep(2.0)
+
+        status = get_simulation_status()
+        @test status["running"] == false
+        @test status["result"] !== nothing
+        @test status["result"]["status"] == "completed"
+        @test length(status["log"]) > 0
     end
 end

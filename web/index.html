@@ -83,8 +83,8 @@
 
         <!-- Mode tabs -->
         <div class="sim-tabs">
-            <button class="sim-tab active" data-tab="setup">Setup</button>
-            <button class="sim-tab" data-tab="results">Results</button>
+            <button class="sim-tab active" data-tab="setup">⚙️ Setup</button>
+            <button class="sim-tab" data-tab="results">📊 Results</button>
         </div>
 
         <!-- Setup mode -->
@@ -95,6 +95,10 @@
                 <button id="btn-run-sim" class="btn-primary btn-run">▶ Run Simulation</button>
             </div>
             <div id="sim-status" class="sim-status" style="display:none;"></div>
+            <div id="sim-output-log" class="sim-output-log" style="display:none;">
+                <h4>Simulation Output</h4>
+                <div id="sim-log-content" class="sim-log-content"></div>
+            </div>
         </div>
 
         <!-- Results mode -->
